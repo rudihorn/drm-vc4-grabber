@@ -1,5 +1,5 @@
 [package]
-name = "DRM VC4 capture"
+name = "drm-v4-capture"
 version = "0.1.0"
 authors = ["Rudi <dyn-git@rudi-horn.de>"]
 edition = "2018"
