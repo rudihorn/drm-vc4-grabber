@@ -1,7 +1,7 @@
-# DRM VC4 capture
+# DRM VC4 screen grabber 
 
-This is an experimental attempt to capture a screenshot from a Rapberry pi that
-is rendering using the [Direct Rendering
+This is an experimental attempt to capture a screenshot from a Raspberry Pi
+(also working on rpi 4) that is rendering using the [Direct Rendering
 Manager](https://en.wikipedia.org/wiki/Direct_Rendering_Manager). It currently
 works by opening the default card adapter, looping through all the planes and
 finding the underlying framebuffers. Using the framebuffer it is possible to
@@ -22,3 +22,9 @@ is also some other interlacing or similar I have not quite figured out yet.
 4. Set the linker in your env var: `export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=/usr/bin/arm-linux-gnueabihf-gcc`
 5. Compile: `cargo build --release --target armv7-unknown-linux-gnueabihf`
 6. The built file will be at `target/armv7-unknown-linux-gnueabihf/release/v4lrust`
+
+## Example
+
+The following is an example screen capture in the current codes state.
+
+![Image capture](screenshot.png "Raspberry pi using latest OSMC devel branch and kodi 19")
