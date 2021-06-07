@@ -38,8 +38,6 @@ impl Card {
 }
 
 fn main() {
-    println!("Hello, world!");
-
     let card = Card::open_global();
     let driver = card.get_driver().unwrap();
     println!("Driver: {:?}", driver);
