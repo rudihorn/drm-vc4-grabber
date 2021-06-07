@@ -7,7 +7,7 @@ use std::usize;
 use drm::control::Device as ControlDevice;
 use drm::Device;
 
-use image::{RgbImage, Rgb};
+use image::{Rgb, RgbImage};
 
 use std::os::unix::io::{AsRawFd, RawFd};
 
@@ -60,7 +60,7 @@ fn main() {
 
             let size = fbinfo.size();
             let pitch = fbinfo.pitch();
-            let length = size.1 * pitch + 8*pitch;
+            let length = size.1 * pitch + 8 * pitch;
             let map = {
                 use nix::sys::mman;
                 let addr = core::ptr::null_mut();
@@ -73,7 +73,8 @@ fn main() {
                 }
             };
 
-            let mapping : & mut [u8] = unsafe { std::slice::from_raw_parts_mut(map as *mut _, length as _) };
+            let mapping: &mut [u8] =
+                unsafe { std::slice::from_raw_parts_mut(map as *mut _, length as _) };
 
             let mut img = RgbImage::new(size.0, size.1);
 
@@ -89,18 +90,36 @@ fn main() {
                 }
                 let ty = t / xtiles;
 
-                for y in 0..tilesize {
-                    for x in 0..tilesize{
-                        let col = Rgb([
-                            mapping[(i+2) as usize],
-                            mapping[(i+1) as usize],
-                            mapping[(i+0) as usize]
-                        ]);
-                        if y + ty*tilesize < size.1 {
-                            img.put_pixel(x + tx*tilesize, y + ty*tilesize, col);
-                        }
-                        i = i + 4;
+                for j in 0..tilesize * tilesize {
+                    // each 32x32 tile is subdivided into small tiles of 16x16
+                    // and then tiles of 4x4. The 4x4 tiles are in order, the
+                    // 16x16 tiles go top left, bottom left, bottom right, top
+                    // right. This order seems to be reversed on the second row
+
+                    let col1 = j % 4;
+                    let n = j / 4;
+                    let row1 = n % 4;
+                    let n = n / 4;
+                    let col2 = n % 4;
+                    let n = n / 4;
+                    let row2 = n % 4;
+                    let n = n / 4;
+                    let row3 = if n == 1 || n == 2 { 1 } else {0};
+                    let col3 = n / 2;
+
+                    let color = Rgb([
+                        mapping[(i + 2) as usize],
+                        mapping[(i + 1) as usize],
+                        mapping[(i + 0) as usize],
+                    ]);
+
+                    let xpos = col1 + col2 * 4 + col3 * 16 + tx * tilesize;
+                    let ypos = row1 + row2 * 4 + row3 * 16 + ty * tilesize;
+                    if ypos < size.1 && xpos < size.0 {
+                        img.put_pixel(xpos, ypos, color);
                     }
+
+                    i = i + 4;
                 }
             }
 
