@@ -21,7 +21,7 @@ is also some other interlacing or similar I have not quite figured out yet.
 3. Ensure the linker for this toolchain is installed, e.g. `sudo apt install binutils-arm-none-eabi`
 4. Set the linker in your env var: `export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=/usr/bin/arm-linux-gnueabihf-gcc`
 5. Compile: `cargo build --release --target armv7-unknown-linux-gnueabihf`
-6. The built file will be at `target/armv7-unknown-linux-gnueabihf/release/v4lrust`
+6. The built file will be at `target/armv7-unknown-linux-gnueabihf/release/drm-v4-capture`
 
 ## Example
 
