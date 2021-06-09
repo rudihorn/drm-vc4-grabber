@@ -59,8 +59,14 @@ fn main() {
             println!("  -> Offset: {}", offset);
 
             let size = fbinfo.size();
-            let pitch = fbinfo.pitch();
-            let length = size.1 * pitch + 8 * pitch;
+
+            let tilesize = 32;
+            let tile_count = |n| (n + tilesize - 1) / tilesize;
+            let tiles = (tile_count(size.0), tile_count(size.1));
+            let total_tiles = tiles.0 * tiles.1;
+            let mut img = RgbImage::new(tiles.0 * tilesize, tiles.1 * tilesize);
+
+            let length = total_tiles * tilesize * tilesize * (fbinfo.bpp() / 8);
             let map = {
                 use nix::sys::mman;
                 let addr = core::ptr::null_mut();
@@ -77,14 +83,6 @@ fn main() {
                 unsafe { std::slice::from_raw_parts_mut(map as *mut _, length as _) };
 
 
-            let tilesize = 32;
-
-            let tile_count = |n| (n + tilesize - 1) / tilesize;
-
-            let tiles = (tile_count(size.0), tile_count(size.1));
-            let mut img = RgbImage::new(tiles.0 * tilesize, tiles.1 * tilesize);
-
-            let total_tiles = tiles.0 * tiles.1;
             let xtiles = size.0 / tilesize;
             let mut i = 0;
             for t in 0..total_tiles {
