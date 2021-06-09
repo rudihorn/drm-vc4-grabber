@@ -37,6 +37,78 @@ impl Card {
     }
 }
 
+fn to_image(mapping : &[u8], tilesize : u32, tiles : (u32,u32), size : (u32,u32)) -> RgbImage {
+    let mut img = RgbImage::new(tiles.0 * tilesize, tiles.1 * tilesize);
+    let mut i = 0;
+
+    let mut copy_px = |x, y| {
+        let color = Rgb([
+            mapping[(i + 2) as usize],
+            mapping[(i + 1) as usize],
+            mapping[(i + 0) as usize],
+        ]);
+        unsafe {
+            img.unsafe_put_pixel(x, y, color);
+        }
+        i = i + 4;
+    };
+    let mut copy_4_px = |x, y| {
+        copy_px(x, y);
+        copy_px(x + 1, y);
+        copy_px(x + 2, y);
+        copy_px(x + 3, y);
+    };
+
+    let mut copy_4x4_px = |x, y| {
+        copy_4_px(x, y);
+        copy_4_px(x, y + 1);
+        copy_4_px(x, y + 2);
+        copy_4_px(x, y + 3);
+    };
+
+    let mut copy_16x4_px = |x, y| {
+        copy_4x4_px(x, y);
+        copy_4x4_px(x + 4, y);
+        copy_4x4_px(x + 8, y);
+        copy_4x4_px(x + 12, y);
+    };
+
+    let mut copy_16x16_px = |x, y| {
+        copy_16x4_px(x, y);
+        copy_16x4_px(x, y + 4);
+        copy_16x4_px(x, y + 8);
+        copy_16x4_px(x, y + 12);
+    };
+
+    for ytile in 0..tiles.1 {
+        if ytile % 2 == 0 {
+            let mut copy_tile = |x, y| {
+                copy_16x16_px(x, y);
+                copy_16x16_px(x, y + 16);
+                copy_16x16_px(x + 16, y + 16);
+                copy_16x16_px(x + 16, y);
+            };
+
+            for xtile in 0..tiles.0 {
+                copy_tile(xtile * tilesize, ytile * tilesize);
+            }
+        } else {
+            let mut copy_tile = |x, y| {
+                copy_16x16_px(x + 16, y + 16);
+                copy_16x16_px(x + 16, y);
+                copy_16x16_px(x, y);
+                copy_16x16_px(x, y + 16);
+            };
+
+            for xtile in (0..tiles.0).rev() {
+                copy_tile(xtile * tilesize, ytile * tilesize);
+            }
+        }
+    }
+
+    img.sub_image(0, 0, size.0, size.1).to_image()
+}
+
 fn main() {
     let card = Card::open_global();
     let driver = card.get_driver().unwrap();
@@ -64,7 +136,6 @@ fn main() {
             let tile_count = |n| (n + tilesize - 1) / tilesize;
             let tiles = (tile_count(size.0), tile_count(size.1));
             let total_tiles = tiles.0 * tiles.1;
-            let mut img = RgbImage::new(tiles.0 * tilesize, tiles.1 * tilesize);
 
             let length = total_tiles * tilesize * tilesize * (fbinfo.bpp() / 8);
             let map = {
@@ -82,76 +153,7 @@ fn main() {
             let mapping: &mut [u8] =
                 unsafe { std::slice::from_raw_parts_mut(map as *mut _, length as _) };
 
-            let mut i = 0;
-
-            let mut copy_px = |x, y| {
-                let color = Rgb([
-                    mapping[(i + 2) as usize],
-                    mapping[(i + 1) as usize],
-                    mapping[(i + 0) as usize],
-                ]);
-                unsafe {
-                    img.unsafe_put_pixel(x, y, color);
-                }
-                i = i + 4;
-            };
-            let mut copy_4_px = |x, y| {
-                copy_px(x, y);
-                copy_px(x + 1, y);
-                copy_px(x + 2, y);
-                copy_px(x + 3, y);
-            };
-
-            let mut copy_4x4_px = |x, y| {
-                copy_4_px(x, y);
-                copy_4_px(x, y + 1);
-                copy_4_px(x, y + 2);
-                copy_4_px(x, y + 3);
-            };
-
-            let mut copy_16x4_px = |x, y| {
-                copy_4x4_px(x, y);
-                copy_4x4_px(x + 4, y);
-                copy_4x4_px(x + 8, y);
-                copy_4x4_px(x + 12, y);
-            };
-
-            let mut copy_16x16_px = |x, y| {
-                copy_16x4_px(x, y);
-                copy_16x4_px(x, y + 4);
-                copy_16x4_px(x, y + 8);
-                copy_16x4_px(x, y + 12);
-            };
-
-            for ytile in 0..tiles.1 {
-                if ytile % 2 == 0 {
-                    let mut copy_tile =
-                        |x, y| {
-                            copy_16x16_px(x, y);
-                            copy_16x16_px(x, y + 16);
-                            copy_16x16_px(x + 16, y + 16);
-                            copy_16x16_px(x + 16, y);
-                        };
-
-                    for xtile in 0..tiles.0 {
-                        copy_tile(xtile * tilesize, ytile * tilesize);
-                    }
-                } else {
-                    let mut copy_tile =|x, y| {
-                        copy_16x16_px(x + 16, y + 16);
-                        copy_16x16_px(x + 16, y);
-                        copy_16x16_px(x, y);
-                        copy_16x16_px(x, y + 16);
-                    };
-
-                    for xtile in (0..tiles.0).rev() {
-                        copy_tile(xtile * tilesize, ytile * tilesize);
-                    }
-                }
-            };
-
-            let cropped = img.sub_image(0, 0, size.0, size.1);
-            cropped.to_image().save("screenshot.png").unwrap();
+            to_image(mapping, tilesize, tiles, size).save("screenshot.png").unwrap();
         }
     }
 
