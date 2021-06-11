@@ -27,7 +27,7 @@ pub use hyperion_request_generated::hyperionnet::{Clear, Color, Command, Image, 
 use hyperion::{read_reply, register_direct, send_color_red, send_image};
 use image_decoder::{decode_small_image_multichannel, decode_tiled_small_image};
 
-use crate::image_decoder::decode_small_image;
+use crate::image_decoder::{decode_image_multichannel, decode_small_image};
 
 struct Card(File);
 
@@ -118,7 +118,7 @@ fn dump_multichannel_to_image(
     // The length of the entire buffer is the length of the last buffer plus its
     // offset (assuming they are in order). The U and V buffers are grouped into
     // 2x2 tiles, hence the length is divided by 4.
-    let length = offsets[2] + size.1 * pitches[2] * pitches[2] / size.0;
+    let length = offsets[2] + size.1 * pitches[2] * pitches[2] / pitches[0];
     println!("  -> Mounting @{} +{}", offset, length);
     let addr = core::ptr::null_mut();
     let prot = mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE;
@@ -130,7 +130,7 @@ fn dump_multichannel_to_image(
     };
 
     let buffer_range =
-        |i| offsets[i] as usize..(offsets[i] + size.1 * pitches[i] * pitches[i] / size.0) as usize;
+        |i| offsets[i] as usize..(offsets[i] + size.1 * pitches[i] * pitches[i] / pitches[0]) as usize;
 
     let mappings = [
         &map[buffer_range(0)],
@@ -138,7 +138,15 @@ fn dump_multichannel_to_image(
         &map[buffer_range(2)],
     ];
 
-    decode_small_image_multichannel(mappings, size)
+    let mut pitches1 = [0;3];
+    pitches1.copy_from_slice(&pitches[0..3]);
+
+    if size.0 > 640 {
+        // If the image is large then just decode a smaller image
+        decode_small_image_multichannel(mappings, size, pitches1)
+    } else {
+        decode_image_multichannel(mappings, size, pitches1)
+    }
 }
 
 fn dump_framebuffer_to_image(card: &mut Card, fb: Handle) -> RgbImage {
@@ -149,8 +157,9 @@ fn dump_framebuffer_to_image(card: &mut Card, fb: Handle) -> RgbImage {
     let size = (fbinfo2.width, fbinfo2.height);
     let tiled = fbinfo2.modifier[0] > 0;
     let bpp = match fbinfo2.pixel_format {
-        0x32315559 => 24,
-        _ => 32,
+        842093913 => 24, // YUV420
+        875713112 => 32, // XBGR32
+        _ => 32 // unknown
     };
 
     if tiled {
@@ -167,7 +176,7 @@ fn dump_framebuffer_to_image(card: &mut Card, fb: Handle) -> RgbImage {
 }
 
 fn send_dumped_image(socket: &mut TcpStream, img: &RgbImage) -> StdResult<()> {
-    img.save("screenshot.png").unwrap();
+    //img.save("screenshot.png").unwrap();
 
     register_direct(socket)?;
     read_reply(socket)?;
@@ -203,21 +212,17 @@ fn main() {
 
         let mut already_sent = false;
 
-        for crtc in resource_handles.crtcs() {
+        resource_handles.crtcs().into_iter().for_each(|crtc| {
             let info = card.get_crtc(*crtc).unwrap();
             println!("CRTC Info: {:?}", info);
 
             if info.mode().is_some() {
                 if let Some(fb) = info.framebuffer() {
                     dump_and_send_framebuffer(&mut socket, &mut card, fb).unwrap();
-                    /*
-                    let img = dump_buffer_to_image(&mut card, (1920, 1080), 32, fb.into());
-                    send_dumped_image(&mut socket, &img).unwrap();
-                    */
                     already_sent = true;
                 }
             }
-        }
+        });
 
         if !already_sent {
             for plane in plane_handles.planes() {

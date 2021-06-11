@@ -66,14 +66,6 @@ pub fn send_image(socket: &mut TcpStream, image: & RgbImage) -> StdResult<()> {
         raw_bytes.len()
     );
 
-    let mut image_bytes = vec![0;raw_bytes.len()];
-    for i in 0..image_bytes.len()/3 {
-        let pos = i*3;
-        image_bytes[pos] = raw_bytes[pos+2];
-        image_bytes[pos+1] = raw_bytes[pos+1];
-        image_bytes[pos+2] = raw_bytes[pos];
-    }
-
     let data = builder.create_vector(&raw_bytes);
     let raw_image = request::RawImage::create(
         &mut builder,
