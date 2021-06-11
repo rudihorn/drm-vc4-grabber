@@ -1,4 +1,4 @@
-# DRM VC4 screen grabber 
+# Hyperion DRM VC4 screen grabber 
 
 This is an experimental attempt to capture a screenshot from a Raspberry Pi
 (also working on rpi 4) that is rendering using the [Direct Rendering
@@ -13,6 +13,9 @@ API's (see `/usr/include/drm/vc4_drm.h`), specifically using the ioctl
 bit words, and is tiled in 32x32 bit squares
 ([reference](https://docs.mesa3d.org/drivers/vc4.html#tiled-rendering)). There
 is also some other interlacing or similar I have not quite figured out yet.
+
+The current implementation connects to Hyperion at `127.0.0.1:19400` and
+directly uploads the images.
 
 ## Compiling
 
