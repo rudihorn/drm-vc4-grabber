@@ -2,16 +2,32 @@
 extern crate nix;
 
 use std::fs::{File, OpenOptions};
-use std::usize;
+use std::net::TcpStream;
 
+use drm::control::framebuffer::Handle;
 use drm::control::Device as ControlDevice;
 use drm::Device;
 
-use image::{GenericImage, Rgb, RgbImage};
+use image::RgbImage;
+use nix::sys::mman;
+use nix::unistd::sleep;
 
 use std::os::unix::io::{AsRawFd, RawFd};
 
+use std::io::Result as StdResult;
+
 pub mod ffi;
+pub mod hyperion;
+pub mod hyperion_reply_generated;
+pub mod hyperion_request_generated;
+pub mod image_decoder;
+
+pub use hyperion_request_generated::hyperionnet::{Clear, Color, Command, Image, Register};
+
+use hyperion::{read_reply, register_direct, send_color_red, send_image};
+use image_decoder::decode_tiled_small_image;
+
+use crate::image_decoder::decode_small_image;
 
 struct Card(File);
 
@@ -37,234 +53,138 @@ impl Card {
     }
 }
 
-struct PixelAverage {
-    avg_rb: u32,
-    avg_g: u32,
+fn dump_buffer_to_image(
+    card: &mut Card,
+    tiled: bool,
+    size: (u32, u32),
+    bpp: u32,
+    handle: u32,
+) -> RgbImage {
+    let offset = ffi::mmap_bo(card.as_raw_fd(), handle).unwrap();
+
+    let tilesize = 32;
+    let tile_count = |n| (n + tilesize - 1) / tilesize;
+    let tiles = (tile_count(size.0), tile_count(size.1));
+    let total_tiles = tiles.0 * tiles.1;
+
+    let length = if tiled {
+        total_tiles * tilesize * tilesize * (bpp / 8)
+    } else {
+        size.0 * size.1 // * (bpp / 8)
+    };
+    println!(
+        "  -> Offset: {}, Tiles {:?}, Length {}",
+        offset, tiles, length
+    );
+
+    let map = {
+        let addr = core::ptr::null_mut();
+        //let length = length;
+        let prot = mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE;
+        let flags = mman::MapFlags::MAP_SHARED;
+        let offset = offset as _;
+        unsafe { mman::mmap(addr, length as _, prot, flags, card.as_raw_fd(), offset).unwrap() }
+    };
+
+    let img = if tiled {
+        let mut copy = vec![0; (length / 4) as _];
+        let mapping: &mut [u32] =
+            unsafe { std::slice::from_raw_parts_mut(map as *mut _, (length / 4) as _) };
+        copy.copy_from_slice(mapping);
+        decode_tiled_small_image(copy.as_mut_slice(), tilesize, tiles, size)
+    } else {
+        let mut copy = vec![0; length as _];
+        let mapping: &mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(map as *mut _, length as _) };
+        copy.copy_from_slice(mapping);
+
+        decode_small_image(copy.as_mut_slice(), size)
+    };
+
+    unsafe { mman::munmap(map, length as _).unwrap() };
+
+    img
 }
 
-impl PixelAverage {
-    pub fn new() -> PixelAverage {
-        PixelAverage {
-            avg_rb: 0,
-            avg_g: 0,
-        }
-    }
+fn dump_framebuffer_to_image(card: &mut Card, fb: Handle) -> RgbImage {
+    let fbinfo2 = ffi::fb_cmd2(card.as_raw_fd(), fb.into()).unwrap();
+    println!("  -> FB Info 2: {:?}", fbinfo2);
+    //let fbinfo = card.get_framebuffer(fb).unwrap();
 
-    pub fn add(&mut self, rgb: u32) {
-        let rb = rgb & 0x00FF00FF;
-        let g = rgb & 0x0000FF00;
-        self.avg_rb += rb;
-        self.avg_g += g;
-    }
+    let size = (fbinfo2.width, fbinfo2.height);
+    let tiled = fbinfo2.modifier[0] > 0;
+    let bpp = match fbinfo2.pixel_format {
+        0x32315559 => 16,
+        _ => 32,
+    };
 
-    pub fn rgb(self) -> Rgb<u8> {
-        let rb = self.avg_rb / 16;
-        let g = (self.avg_g / 16) >> 8;
-        let r = rb;
-        let b = rb >> 16;
-
-        Rgb([r as _, g as _, b as _])
-    }
+    dump_buffer_to_image(card, tiled, size, bpp, fbinfo2.handles[0])
 }
 
-fn to_small_image(mapping: &[u32], tilesize: u32, tiles: (u32, u32), size: (u32, u32)) -> RgbImage {
-    let mut img = RgbImage::new(tiles.0 * tilesize / 4, tiles.1 * tilesize / 4);
+fn send_dumped_image(socket: &mut TcpStream, img: &RgbImage) -> StdResult<()> {
+    //img.save("screenshot.png").unwrap();
 
-    let mut i = 0;
+    register_direct(socket)?;
+    read_reply(socket)?;
 
-    let mut avg_16 = |x, y| {
-        let mut avg = PixelAverage::new();
-        for n in 0..16 {
-            avg.add(mapping[i + n]);
-        }
-        unsafe {
-            img.unsafe_put_pixel(x, y, avg.rgb());
-        }
-        i = i + 16;
-    };
+    send_image(socket, img)?;
 
-    let mut copy_16x4_px = |x, y| {
-        avg_16(x, y);
-        avg_16(x + 1, y);
-        avg_16(x + 2, y);
-        avg_16(x + 3, y);
-    };
-
-    let mut copy_16x16_px = |x, y| {
-        copy_16x4_px(x, y);
-        copy_16x4_px(x, y + 1);
-        copy_16x4_px(x, y + 2);
-        copy_16x4_px(x, y + 3);
-    };
-
-    for ytile in 0..tiles.1 {
-        if ytile % 2 == 0 {
-            let mut copy_tile = |x, y| {
-                copy_16x16_px(x, y);
-                copy_16x16_px(x, y + 4);
-                copy_16x16_px(x + 4, y + 4);
-                copy_16x16_px(x + 4, y);
-            };
-
-            for xtile in 0..tiles.0 {
-                copy_tile(xtile * tilesize / 4, ytile * tilesize / 4);
-            }
-        } else {
-            let mut copy_tile = |x, y| {
-                copy_16x16_px(x + 4, y + 4);
-                copy_16x16_px(x + 4, y);
-                copy_16x16_px(x, y);
-                copy_16x16_px(x, y + 4);
-            };
-
-            for xtile in (0..tiles.0).rev() {
-                copy_tile(xtile * tilesize / 4, ytile * tilesize / 4);
-            }
-        }
-    }
-
-    img.sub_image(0, 0, size.0 / 4, size.1 / 4).to_image()
+    Ok(())
 }
 
-fn to_image(mapping: &[u8], tilesize: u32, tiles: (u32, u32), size: (u32, u32)) -> RgbImage {
-    let mut img = RgbImage::new(tiles.0 * tilesize, tiles.1 * tilesize);
-    let mut i = 0;
+fn dump_and_send_framebuffer(socket: &mut TcpStream, card: &mut Card, fb: Handle) -> StdResult<()> {
+    let img = dump_framebuffer_to_image(card, fb);
+    send_dumped_image(socket, &img)?;
 
-    let mut copy_px = |x, y| {
-        let color = Rgb([
-            mapping[(i + 2) as usize],
-            mapping[(i + 1) as usize],
-            mapping[(i + 0) as usize],
-        ]);
-        unsafe {
-            img.unsafe_put_pixel(x, y, color);
-        }
-        i = i + 4;
-    };
-    let mut copy_4_px = |x, y| {
-        copy_px(x, y);
-        copy_px(x + 1, y);
-        copy_px(x + 2, y);
-        copy_px(x + 3, y);
-    };
-
-    let mut copy_4x4_px = |x, y| {
-        copy_4_px(x, y);
-        copy_4_px(x, y + 1);
-        copy_4_px(x, y + 2);
-        copy_4_px(x, y + 3);
-    };
-
-    let mut copy_16x4_px = |x, y| {
-        copy_4x4_px(x, y);
-        copy_4x4_px(x + 4, y);
-        copy_4x4_px(x + 8, y);
-        copy_4x4_px(x + 12, y);
-    };
-
-    let mut copy_16x16_px = |x, y| {
-        copy_16x4_px(x, y);
-        copy_16x4_px(x, y + 4);
-        copy_16x4_px(x, y + 8);
-        copy_16x4_px(x, y + 12);
-    };
-
-    for ytile in 0..tiles.1 {
-        if ytile % 2 == 0 {
-            let mut copy_tile = |x, y| {
-                copy_16x16_px(x, y);
-                copy_16x16_px(x, y + 16);
-                copy_16x16_px(x + 16, y + 16);
-                copy_16x16_px(x + 16, y);
-            };
-
-            for xtile in 0..tiles.0 {
-                copy_tile(xtile * tilesize, ytile * tilesize);
-            }
-        } else {
-            let mut copy_tile = |x, y| {
-                copy_16x16_px(x + 16, y + 16);
-                copy_16x16_px(x + 16, y);
-                copy_16x16_px(x, y);
-                copy_16x16_px(x, y + 16);
-            };
-
-            for xtile in (0..tiles.0).rev() {
-                copy_tile(xtile * tilesize, ytile * tilesize);
-            }
-        }
-    }
-
-    img.sub_image(0, 0, size.0, size.1).to_image()
+    Ok(())
 }
 
 fn main() {
-    let card = Card::open_global();
+    let mut card = Card::open_global();
     let driver = card.get_driver().unwrap();
     println!("Driver: {:?}", driver);
 
+    let mut socket = TcpStream::connect("127.0.0.1:19400").unwrap();
+    register_direct(&mut socket).unwrap();
+    read_reply(&mut socket).unwrap();
+
+    send_color_red(&mut socket).unwrap();
+    sleep(1);
+
     let plane_handles = card.plane_handles().unwrap();
 
-    for plane in plane_handles.planes() {
-        let info = card.get_plane(*plane).unwrap();
-        println!("Plane Info: {:?}", info);
+    loop {
+        let resource_handles = card.resource_handles().unwrap();
 
-        if info.crtc().is_some() {
-            let fb = info.framebuffer().unwrap();
-            let fbinfo = card.get_framebuffer(fb).unwrap();
-            let fbinfo2 = ffi::fb_cmd2(card.as_raw_fd(), fb.into()).unwrap();
-            println!("  -> FB Info: {:?}", fbinfo);
-            println!("  -> FB Info 2: {:?}", fbinfo2);
+        let mut already_sent = false;
 
-            let offset = ffi::mmap_bo(card.as_raw_fd(), fbinfo2.handles[0]).unwrap();
-            println!("  -> Offset: {}", offset);
+        for crtc in resource_handles.crtcs() {
+            let info = card.get_crtc(*crtc).unwrap();
+            println!("CRTC Info: {:?}", info);
 
-            let size = fbinfo.size();
-
-            let tilesize = 32;
-            let tile_count = |n| (n + tilesize - 1) / tilesize;
-            let tiles = (tile_count(size.0), tile_count(size.1));
-            let total_tiles = tiles.0 * tiles.1;
-
-            let length = total_tiles * tilesize * tilesize * (fbinfo.bpp() / 8);
-            let map = {
-                use nix::sys::mman;
-                let addr = core::ptr::null_mut();
-                //let length = length;
-                let prot = mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE;
-                let flags = mman::MapFlags::MAP_SHARED;
-                let offset = offset as _;
-                unsafe {
-                    mman::mmap(addr, length as _, prot, flags, card.as_raw_fd(), offset).unwrap()
+            if info.mode().is_some() {
+                if let Some(fb) = info.framebuffer() {
+                    dump_and_send_framebuffer(&mut socket, &mut card, fb).unwrap();
+                    /*
+                    let img = dump_buffer_to_image(&mut card, (1920, 1080), 32, fb.into());
+                    send_dumped_image(&mut socket, &img).unwrap();
+                    */
+                    already_sent = true;
                 }
-            };
-
-            let small = true;
-
-            if small {
-                let mapping: &mut [u32] =
-                    unsafe { std::slice::from_raw_parts_mut(map as *mut _, (length / 4) as _) };
-
-                to_small_image(mapping, tilesize, tiles, size)
-                    .save("screenshot.png")
-                    .unwrap();
-            } else {
-                let mapping: &mut [u8] =
-                    unsafe { std::slice::from_raw_parts_mut(map as *mut _, length as _) };
-
-                to_image(mapping, tilesize, tiles, size)
-                    .save("screenshot.png")
-                    .unwrap();
             }
         }
-    }
 
-    let resource_handles = card.resource_handles().unwrap();
+        if !already_sent {
+            for plane in plane_handles.planes() {
+                let info = card.get_plane(*plane).unwrap();
+                println!("Plane Info: {:?}", info);
 
-    for crtc in resource_handles.crtcs() {
-        let info = card.get_crtc(*crtc).unwrap();
-        println!("CRTC Info: {:?}", info);
+                if info.crtc().is_some() {
+                    let fb = info.framebuffer().unwrap();
 
-        if info.mode().is_some() {}
+                    dump_and_send_framebuffer(&mut socket, &mut card, fb).unwrap();
+                }
+            }
+        }
     }
 }

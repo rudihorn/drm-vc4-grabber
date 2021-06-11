@@ -11,6 +11,5 @@ nix = "0.20.0"
 drm-ffi = "0.1.0"
 drm-sys = "0.1.0"
 image = "0.23.14"
-
-[target.armv7-unknown-linux-gnueabihf]
-linker = "arm-linux-gnueabihf-ld"
+flatbuffers = "2.0.0"
+byteorder = "1.4.3"
