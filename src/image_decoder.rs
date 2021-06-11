@@ -30,19 +30,77 @@ impl PixelAverage {
     }
 }
 
+pub struct YUV420 {
+    dat: [u8; 3],
+}
+
+impl YUV420 {
+    pub fn new(c: u8, d: u8, e: u8) -> YUV420 {
+        YUV420 { dat: [c, d, e] }
+    }
+
+    pub fn rgb(&self) -> Rgb<u8> {
+        let y = self.dat[0] as i32;
+        let u = self.dat[1] as i32;
+        let v = self.dat[2] as i32;
+        let c = y - 16;
+        let d = u - 128;
+        let e = v - 128;
+
+        let r = (298 * c + 409 * e + 128) >> 8;
+        let g = (298 * c - 100 * d - 208 * e + 128) >> 8;
+        let b = (298 * c + 516 * d + 128) >> 8;
+
+        let clamp = |v| {
+            if v > 0xFF {
+                0xFF
+            } else {
+                if v < 0 {
+                    0
+                } else {
+                    v as u8
+                }
+            }
+        };
+
+        Rgb([clamp(r), clamp(g), clamp(b)])
+    }
+}
+
 pub fn decode_small_image(mapping: &[u8], size: (u32, u32)) -> RgbImage {
     let mut img = RgbImage::new(size.0, size.1);
 
     for y in 0..size.1 {
         for x in 0..size.0 {
             let offset: usize = (y * size.0 + x) as _;
+
             unsafe {
                 img.unsafe_put_pixel(
                     x,
                     y,
-                    Rgb([mapping[offset], mapping[offset ], mapping[offset ]]),
+                    Rgb([mapping[offset], mapping[offset], mapping[offset]]),
                 )
             };
+        }
+    }
+
+    img
+}
+
+pub fn decode_small_image_multichannel(mappings: [&[u8]; 3], size: (u32, u32)) -> RgbImage {
+    let mut img = RgbImage::new(size.0, size.1);
+
+    for y in 0..size.1 {
+        for x in 0..size.0 {
+            let offset: usize = (y * size.0 + x) as _;
+            let offset_half: usize = ((y / 2) * (size.0 / 2) + x / 2) as _;
+            let yuv = YUV420::new(
+                mappings[0][offset],
+                mappings[1][offset_half],
+                mappings[2][offset_half],
+            );
+
+            unsafe { img.unsafe_put_pixel(x, y, yuv.rgb()) };
         }
     }
 

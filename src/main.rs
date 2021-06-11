@@ -25,7 +25,7 @@ pub mod image_decoder;
 pub use hyperion_request_generated::hyperionnet::{Clear, Color, Command, Image, Register};
 
 use hyperion::{read_reply, register_direct, send_color_red, send_image};
-use image_decoder::decode_tiled_small_image;
+use image_decoder::{decode_small_image_multichannel, decode_tiled_small_image};
 
 use crate::image_decoder::decode_small_image;
 
@@ -70,7 +70,7 @@ fn dump_buffer_to_image(
     let length = if tiled {
         total_tiles * tilesize * tilesize * (bpp / 8)
     } else {
-        size.0 * size.1 // * (bpp / 8)
+        size.0 * size.1 * (bpp / 8)
     };
     println!(
         "  -> Offset: {}, Tiles {:?}, Length {}",
@@ -106,6 +106,41 @@ fn dump_buffer_to_image(
     img
 }
 
+fn dump_multichannel_to_image(
+    card: &mut Card,
+    size: (u32, u32),
+    pitches: [u32; 4],
+    handles: [u32; 4],
+    offsets: [u32; 4],
+) -> RgbImage {
+    let offset = ffi::mmap_bo(card.as_raw_fd(), handles[0]).unwrap();
+
+    // The length of the entire buffer is the length of the last buffer plus its
+    // offset (assuming they are in order). The U and V buffers are grouped into
+    // 2x2 tiles, hence the length is divided by 4.
+    let length = offsets[2] + size.1 * pitches[2] * pitches[2] / size.0;
+    println!("  -> Mounting @{} +{}", offset, length);
+    let addr = core::ptr::null_mut();
+    let prot = mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE;
+    let flags = mman::MapFlags::MAP_SHARED;
+    let offset = (offset as u64) as _;
+    let map = unsafe {
+        let map = mman::mmap(addr, length as _, prot, flags, card.as_raw_fd(), offset).unwrap();
+        std::slice::from_raw_parts(map as *mut _, length as _)
+    };
+
+    let buffer_range =
+        |i| offsets[i] as usize..(offsets[i] + size.1 * pitches[i] * pitches[i] / size.0) as usize;
+
+    let mappings = [
+        &map[buffer_range(0)],
+        &map[buffer_range(1)],
+        &map[buffer_range(2)],
+    ];
+
+    decode_small_image_multichannel(mappings, size)
+}
+
 fn dump_framebuffer_to_image(card: &mut Card, fb: Handle) -> RgbImage {
     let fbinfo2 = ffi::fb_cmd2(card.as_raw_fd(), fb.into()).unwrap();
     println!("  -> FB Info 2: {:?}", fbinfo2);
@@ -114,15 +149,25 @@ fn dump_framebuffer_to_image(card: &mut Card, fb: Handle) -> RgbImage {
     let size = (fbinfo2.width, fbinfo2.height);
     let tiled = fbinfo2.modifier[0] > 0;
     let bpp = match fbinfo2.pixel_format {
-        0x32315559 => 16,
+        0x32315559 => 24,
         _ => 32,
     };
 
-    dump_buffer_to_image(card, tiled, size, bpp, fbinfo2.handles[0])
+    if tiled {
+        dump_buffer_to_image(card, tiled, size, bpp, fbinfo2.handles[0])
+    } else {
+        dump_multichannel_to_image(
+            card,
+            size,
+            fbinfo2.pitches,
+            fbinfo2.handles,
+            fbinfo2.offsets,
+        )
+    }
 }
 
 fn send_dumped_image(socket: &mut TcpStream, img: &RgbImage) -> StdResult<()> {
-    //img.save("screenshot.png").unwrap();
+    img.save("screenshot.png").unwrap();
 
     register_direct(socket)?;
     read_reply(socket)?;
