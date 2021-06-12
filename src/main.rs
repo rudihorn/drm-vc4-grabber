@@ -72,10 +72,6 @@ fn dump_buffer_to_image(
     } else {
         size.0 * size.1 * (bpp / 8)
     };
-    println!(
-        "  -> Offset: {}, Tiles {:?}, Length {}",
-        offset, tiles, length
-    );
 
     let map = {
         let addr = core::ptr::null_mut();
@@ -119,23 +115,27 @@ fn dump_multichannel_to_image(
     // offset (assuming they are in order). The U and V buffers are grouped into
     // 2x2 tiles, hence the length is divided by 4.
     let length = offsets[2] + size.1 * pitches[2] * pitches[2] / pitches[0];
-    println!("  -> Mounting @{} +{}", offset, length);
+    //println!("  -> Mounting @{} +{}", offset, length);
     let addr = core::ptr::null_mut();
     let prot = mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE;
     let flags = mman::MapFlags::MAP_SHARED;
     let offset = (offset as u64) as _;
-    let map = unsafe {
+    let mut copy = vec![0; length as _];
+    unsafe {
         let map = mman::mmap(addr, length as _, prot, flags, card.as_raw_fd(), offset).unwrap();
-        std::slice::from_raw_parts(map as *mut _, length as _)
+        let mapping: &mut [u8] =
+            std::slice::from_raw_parts_mut(map as *mut _, length as _);
+        copy.copy_from_slice(mapping);
+        mman::munmap(map, length as _).unwrap();
     };
 
     let buffer_range =
         |i| offsets[i] as usize..(offsets[i] + size.1 * pitches[i] * pitches[i] / pitches[0]) as usize;
 
     let mappings = [
-        &map[buffer_range(0)],
-        &map[buffer_range(1)],
-        &map[buffer_range(2)],
+        &copy[buffer_range(0)],
+        &copy[buffer_range(1)],
+        &copy[buffer_range(2)],
     ];
 
     let mut pitches1 = [0;3];
@@ -151,8 +151,7 @@ fn dump_multichannel_to_image(
 
 fn dump_framebuffer_to_image(card: &mut Card, fb: Handle) -> RgbImage {
     let fbinfo2 = ffi::fb_cmd2(card.as_raw_fd(), fb.into()).unwrap();
-    println!("  -> FB Info 2: {:?}", fbinfo2);
-    //let fbinfo = card.get_framebuffer(fb).unwrap();
+    //println!("  -> FB Info 2: {:?}", fbinfo2);
 
     let size = (fbinfo2.width, fbinfo2.height);
     let tiled = fbinfo2.modifier[0] > 0;
@@ -214,7 +213,7 @@ fn main() {
 
         resource_handles.crtcs().into_iter().for_each(|crtc| {
             let info = card.get_crtc(*crtc).unwrap();
-            println!("CRTC Info: {:?}", info);
+            //println!("CRTC Info: {:?}", info);
 
             if info.mode().is_some() {
                 if let Some(fb) = info.framebuffer() {
@@ -227,7 +226,7 @@ fn main() {
         if !already_sent {
             for plane in plane_handles.planes() {
                 let info = card.get_plane(*plane).unwrap();
-                println!("Plane Info: {:?}", info);
+                //println!("Plane Info: {:?}", info);
 
                 if info.crtc().is_some() {
                     let fb = info.framebuffer().unwrap();

@@ -14,13 +14,12 @@ pub fn read_reply(socket: &mut TcpStream) -> StdResult<()> {
     socket.read_exact(&mut size)?;
 
     let v = Cursor::new(size).read_u32::<BigEndian>()? as usize;
-    println!("Size: {}", v);
     let mut msg = vec![0; v];
     socket.read_exact(&mut msg)?;
 
-    let request = reply::root_as_reply(&msg).unwrap();
+    let _request = reply::root_as_reply(&msg).unwrap();
 
-    println!("Response {:?}", request);
+    // println!("Response {:?}", request);
 
     Ok(())
 }
@@ -59,12 +58,12 @@ pub fn send_image(socket: &mut TcpStream, image: & RgbImage) -> StdResult<()> {
 
     let raw_bytes = image.as_bytes();
 
-    println!(
+    /* println!(
         "Sending image {}x{} (size: {})",
         image.width(),
         image.height(),
         raw_bytes.len()
-    );
+    ); */
 
     let data = builder.create_vector(&raw_bytes);
     let raw_image = request::RawImage::create(
