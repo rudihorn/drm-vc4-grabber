@@ -217,8 +217,9 @@ fn main() {
         .get_matches();
 
     let mut card = Card::open_global();
+    let authenticated = card.authenticated().unwrap();
     let driver = card.get_driver().unwrap();
-    println!("Driver: {:?}", driver);
+    println!("Driver (auth={}): {:?}", authenticated, driver);
 
     let adress = matches.value_of("address").unwrap();
     let mut socket = TcpStream::connect(adress).unwrap();
