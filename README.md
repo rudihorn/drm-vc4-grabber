@@ -1,11 +1,11 @@
 # Hyperion DRM VC4 screen grabber 
 
-This is an experimental attempt to capture a screenshot from a Raspberry Pi
-(also working on rpi 4) that is rendering using the [Direct Rendering
-Manager](https://en.wikipedia.org/wiki/Direct_Rendering_Manager). It currently
-works by opening the default card adapter, looping through all the planes and
-finding the underlying framebuffers. Using the framebuffer it is possible to
-determine the buffer handle for the underlying buffer object handle.
+This is an experimental attempt to capture a screenshot from a Raspberry Pi that
+ is rendering using the [Direct Rendering
+ Manager](https://en.wikipedia.org/wiki/Direct_Rendering_Manager). It currently
+ works by opening the default card adapter, looping through all the planes and
+ finding the underlying framebuffers. Using the framebuffer it is possible to
+ determine the buffer handle for the underlying buffer object handle.
 
 The buffer object handle can be mapped to memory using the VC4 specific DRM
 API's (see `/usr/include/drm/vc4_drm.h`), specifically using the ioctl

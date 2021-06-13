@@ -4,11 +4,12 @@ extern crate nix;
 use std::fs::{File, OpenOptions};
 use std::net::TcpStream;
 
+use clap::{App, Arg};
 use drm::control::framebuffer::Handle;
 use drm::control::Device as ControlDevice;
 use drm::Device;
 
-use image::RgbImage;
+use image::{ImageError, RgbImage};
 use nix::sys::mman;
 use nix::unistd::sleep;
 
@@ -123,14 +124,14 @@ fn dump_multichannel_to_image(
     let mut copy = vec![0; length as _];
     unsafe {
         let map = mman::mmap(addr, length as _, prot, flags, card.as_raw_fd(), offset).unwrap();
-        let mapping: &mut [u8] =
-            std::slice::from_raw_parts_mut(map as *mut _, length as _);
+        let mapping: &mut [u8] = std::slice::from_raw_parts_mut(map as *mut _, length as _);
         copy.copy_from_slice(mapping);
         mman::munmap(map, length as _).unwrap();
     };
 
-    let buffer_range =
-        |i| offsets[i] as usize..(offsets[i] + size.1 * pitches[i] * pitches[i] / pitches[0]) as usize;
+    let buffer_range = |i| {
+        offsets[i] as usize..(offsets[i] + size.1 * pitches[i] * pitches[i] / pitches[0]) as usize
+    };
 
     let mappings = [
         &copy[buffer_range(0)],
@@ -138,7 +139,7 @@ fn dump_multichannel_to_image(
         &copy[buffer_range(2)],
     ];
 
-    let mut pitches1 = [0;3];
+    let mut pitches1 = [0; 3];
     pitches1.copy_from_slice(&pitches[0..3]);
 
     if size.0 > 640 {
@@ -158,7 +159,7 @@ fn dump_framebuffer_to_image(card: &mut Card, fb: Handle) -> RgbImage {
     let bpp = match fbinfo2.pixel_format {
         842093913 => 24, // YUV420
         875713112 => 32, // XBGR32
-        _ => 32 // unknown
+        _ => 32,         // unknown
     };
 
     if tiled {
@@ -174,9 +175,11 @@ fn dump_framebuffer_to_image(card: &mut Card, fb: Handle) -> RgbImage {
     }
 }
 
-fn send_dumped_image(socket: &mut TcpStream, img: &RgbImage) -> StdResult<()> {
-    //img.save("screenshot.png").unwrap();
+fn screenshot(img: &RgbImage) -> Result<(), ImageError> {
+    img.save("screenshot.png")
+}
 
+fn send_dumped_image(socket: &mut TcpStream, img: &RgbImage) -> StdResult<()> {
     register_direct(socket)?;
     read_reply(socket)?;
 
@@ -193,18 +196,37 @@ fn dump_and_send_framebuffer(socket: &mut TcpStream, card: &mut Card, fb: Handle
 }
 
 fn main() {
+    let matches = App::new("DRM VC4 Screen Grabber for Hyperion")
+        .version("0.1.0")
+        .author("Rudi Horn <dyn-git@rudi-horn.de>")
+        .about("Captures a screenshot and sends it to the Hyperion server.")
+        .arg(
+            Arg::with_name("address")
+                .short("a")
+                .long("address")
+                .default_value("127.0.0.1:19400")
+                .takes_value(true)
+                .help("The Hyperion TCP socket address to send the captured screenshots to."),
+        )
+        .arg(
+            Arg::with_name("screenshot")
+                .long("screenshot")
+                .takes_value(false)
+                .help("Capture a screenshot and save it to screenshot.png"),
+        )
+        .get_matches();
+
     let mut card = Card::open_global();
     let driver = card.get_driver().unwrap();
     println!("Driver: {:?}", driver);
 
-    let mut socket = TcpStream::connect("127.0.0.1:19400").unwrap();
+    let adress = matches.value_of("address").unwrap();
+    let mut socket = TcpStream::connect(adress).unwrap();
     register_direct(&mut socket).unwrap();
     read_reply(&mut socket).unwrap();
 
     send_color_red(&mut socket).unwrap();
     sleep(1);
-
-    let plane_handles = card.plane_handles().unwrap();
 
     loop {
         let resource_handles = card.resource_handles().unwrap();
@@ -222,6 +244,8 @@ fn main() {
                 }
             }
         });
+
+        let plane_handles = card.plane_handles().unwrap();
 
         if !already_sent {
             for plane in plane_handles.planes() {
