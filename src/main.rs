@@ -221,6 +221,11 @@ fn main() {
     let driver = card.get_driver().unwrap();
     println!("Driver (auth={}): {:?}", authenticated, driver);
 
+    if !authenticated {
+        let auth_token = card.generate_auth_token().unwrap();
+        card.authenticate_auth_token(auth_token).unwrap();
+    }
+
     let adress = matches.value_of("address").unwrap();
     let mut socket = TcpStream::connect(adress).unwrap();
     register_direct(&mut socket).unwrap();
