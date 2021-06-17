@@ -32,7 +32,6 @@ pub use hyperion_request_generated::hyperionnet::{Clear, Color, Command, Image, 
 use hyperion::{read_reply, register_direct, send_color_red, send_image};
 use image_decoder::{decode_small_image_multichannel, decode_tiled_small_image};
 
-use crate::drivers::driver::Driver;
 use crate::drivers::AnyDriver;
 use crate::image_decoder::{decode_image_multichannel, decode_small_image};
 
@@ -64,8 +63,6 @@ fn dump_buffer_to_image(
     bpp: u32,
     handle: u32,
 ) -> RgbImage {
-    let offset = driver.mmap(handle).unwrap();
-
     let tilesize = 32;
     let tile_count = |n| (n + tilesize - 1) / tilesize;
     let tiles = (tile_count(size.0), tile_count(size.1));
@@ -77,31 +74,17 @@ fn dump_buffer_to_image(
         size.0 * size.1 * (bpp / 8)
     };
 
-    let map = {
-        let addr = core::ptr::null_mut();
-        //let length = length;
-        let prot = mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE;
-        let flags = mman::MapFlags::MAP_SHARED;
-        let offset = offset as _;
-        unsafe { mman::mmap(addr, length as _, prot, flags, driver.as_raw_fd(), offset).unwrap() }
-    };
-
     let img = if tiled {
         let mut copy = vec![0; (length / 4) as _];
-        let mapping: &mut [u32] =
-            unsafe { std::slice::from_raw_parts_mut(map as *mut _, (length / 4) as _) };
-        copy.copy_from_slice(mapping);
+        driver.copy(handle, &mut copy).unwrap();
+
         decode_tiled_small_image(copy.as_mut_slice(), tilesize, tiles, size)
     } else {
         let mut copy = vec![0; length as _];
-        let mapping: &mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(map as *mut _, length as _) };
-        copy.copy_from_slice(mapping);
+        driver.copy(handle, &mut copy).unwrap();
 
         decode_small_image(copy.as_mut_slice(), size)
     };
-
-    unsafe { mman::munmap(map, length as _).unwrap() };
 
     img
 }
@@ -113,24 +96,14 @@ fn dump_multichannel_to_image(
     handles: [u32; 4],
     offsets: [u32; 4],
 ) -> RgbImage {
-    let offset = driver.mmap(handles[0]).unwrap();
-
     // The length of the entire buffer is the length of the last buffer plus its
     // offset (assuming they are in order). The U and V buffers are grouped into
     // 2x2 tiles, hence the length is divided by 4.
     let length = offsets[2] + size.1 * pitches[2] * pitches[2] / pitches[0];
     //println!("  -> Mounting @{} +{}", offset, length);
-    let addr = core::ptr::null_mut();
-    let prot = mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE;
-    let flags = mman::MapFlags::MAP_SHARED;
-    let offset = (offset as u64) as _;
+
     let mut copy = vec![0; length as _];
-    unsafe {
-        let map = mman::mmap(addr, length as _, prot, flags, driver.as_raw_fd(), offset).unwrap();
-        let mapping: &mut [u8] = std::slice::from_raw_parts_mut(map as *mut _, length as _);
-        copy.copy_from_slice(mapping);
-        mman::munmap(map, length as _).unwrap();
-    };
+    driver.copy(handles[0], &mut copy).unwrap();
 
     let buffer_range = |i| {
         offsets[i] as usize..(offsets[i] + size.1 * pitches[i] * pitches[i] / pitches[0]) as usize
@@ -153,9 +126,12 @@ fn dump_multichannel_to_image(
     }
 }
 
-fn dump_framebuffer_to_image(driver: &mut AnyDriver<Card>, fb: Handle) -> RgbImage {
+fn dump_framebuffer_to_image(driver: &mut AnyDriver<Card>, fb: Handle, verbose: bool) -> RgbImage {
     let fbinfo2 = ffi::fb_cmd2(driver.dev().as_raw_fd(), fb.into()).unwrap();
-    //println!("  -> FB Info 2: {:?}", fbinfo2);
+
+    if verbose {
+        println!("  -> FB Info 2: {:?}", fbinfo2);
+    }
 
     let size = (fbinfo2.width, fbinfo2.height);
     let tiled = fbinfo2.modifier[0] > 0;
@@ -195,8 +171,9 @@ fn dump_and_send_framebuffer(
     socket: &mut TcpStream,
     driver: &mut AnyDriver<Card>,
     fb: Handle,
+    verbose: bool,
 ) -> StdResult<()> {
-    let img = dump_framebuffer_to_image(driver, fb);
+    let img = dump_framebuffer_to_image(driver, fb, verbose);
     send_dumped_image(socket, &img)?;
 
     Ok(())
@@ -213,7 +190,8 @@ fn main() {
                 .long("device")
                 .default_value("/dev/dri/card0")
                 .takes_value(true)
-                .help("The device path of the DRM device to capture the image from."))
+                .help("The device path of the DRM device to capture the image from."),
+        )
         .arg(
             Arg::with_name("address")
                 .short("a")
@@ -228,13 +206,23 @@ fn main() {
                 .takes_value(false)
                 .help("Capture a screenshot and save it to screenshot.png"),
         )
+        .arg(
+            Arg::with_name("verbose")
+                .short("v")
+                .long("verbose")
+                .help("Print verbose debugging information."),
+        )
         .get_matches();
 
+    let verbose = matches.is_present("verbose");
     let device_path = matches.value_of("device").unwrap();
     let card = Card::open(device_path);
     let authenticated = card.authenticated().unwrap();
-    let driver = card.get_driver().unwrap();
-    println!("Driver (auth={}): {:?}", authenticated, driver);
+
+    if verbose {
+        let driver = card.get_driver().unwrap();
+        println!("Driver (auth={}): {:?}", authenticated, driver);
+    }
 
     let mut driver = AnyDriver::of(card).unwrap();
 
@@ -258,11 +246,14 @@ fn main() {
 
         resource_handles.crtcs().into_iter().for_each(|crtc| {
             let info = driver.dev().get_crtc(*crtc).unwrap();
-            //println!("CRTC Info: {:?}", info);
+
+            if verbose {
+                println!("CRTC Info: {:?}", info);
+            }
 
             if info.mode().is_some() {
                 if let Some(fb) = info.framebuffer() {
-                    dump_and_send_framebuffer(&mut socket, &mut driver, fb).unwrap();
+                    dump_and_send_framebuffer(&mut socket, &mut driver, fb, verbose).unwrap();
                     already_sent = true;
                 }
             }
@@ -273,12 +264,15 @@ fn main() {
         if !already_sent {
             for plane in plane_handles.planes() {
                 let info = driver.dev().get_plane(*plane).unwrap();
-                //println!("Plane Info: {:?}", info);
+
+                if verbose {
+                    println!("Plane Info: {:?}", info);
+                }
 
                 if info.crtc().is_some() {
                     let fb = info.framebuffer().unwrap();
 
-                    dump_and_send_framebuffer(&mut socket, &mut driver, fb).unwrap();
+                    dump_and_send_framebuffer(&mut socket, &mut driver, fb, verbose).unwrap();
                 }
             }
         }

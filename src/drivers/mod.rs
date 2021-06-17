@@ -1,19 +1,20 @@
 pub mod driver;
-pub mod vc4driver;
 pub mod v3ddriver;
+pub mod vc4driver;
 
-use std::os::unix::prelude::{AsRawFd, RawFd};
+use std::{mem::size_of, os::unix::prelude::{AsRawFd, RawFd}};
 
 pub use driver::{Driver, DriverCard};
 pub use drm::Device;
-pub use vc4driver::VC4Driver;
-pub use v3ddriver::V3DDriver;
 use drm_ffi::result::SystemError;
+use nix::sys::mman;
+pub use v3ddriver::V3DDriver;
+pub use vc4driver::VC4Driver;
 
 #[derive(Debug)]
 pub enum DriverError {
     SystemError(SystemError),
-    UnknownDriver(String)
+    UnknownDriver(String),
 }
 
 impl From<SystemError> for DriverError {
@@ -22,28 +23,37 @@ impl From<SystemError> for DriverError {
     }
 }
 
-pub enum AnyDriver<Dev> where Dev : DriverCard {
+pub enum AnyDriver<Dev>
+where
+    Dev: DriverCard,
+{
     VC4(VC4Driver<Dev>),
-    V3D(V3DDriver<Dev>)
+    V3D(V3DDriver<Dev>),
 }
 
-impl<Dev> AsRawFd for AnyDriver<Dev> where Dev : DriverCard {
+impl<Dev> AsRawFd for AnyDriver<Dev>
+where
+    Dev: DriverCard,
+{
     fn as_raw_fd(&self) -> RawFd {
         match self {
             AnyDriver::VC4(vc4) => vc4.as_raw_fd(),
-            AnyDriver::V3D(v3d) => v3d.as_raw_fd()
+            AnyDriver::V3D(v3d) => v3d.as_raw_fd(),
         }
     }
 }
 
-impl<Dev> AnyDriver<Dev> where Dev : DriverCard {
-    pub fn of(dev : Dev) -> Result<AnyDriver<Dev>, DriverError> {
+impl<Dev> AnyDriver<Dev>
+where
+    Dev: DriverCard,
+{
+    pub fn of(dev: Dev) -> Result<AnyDriver<Dev>, DriverError> {
         let driver = dev.get_driver()?;
         let driver_name = driver.name().to_str().unwrap();
         let driver = match driver_name {
             "v3d" => Ok(AnyDriver::V3D(V3DDriver::of(dev))),
             "vc4" => Ok(AnyDriver::VC4(VC4Driver::of(dev))),
-            _ => Err(DriverError::UnknownDriver(String::from(driver_name)))
+            _ => Err(DriverError::UnknownDriver(String::from(driver_name))),
         };
         driver
     }
@@ -51,13 +61,46 @@ impl<Dev> AnyDriver<Dev> where Dev : DriverCard {
     pub fn dev(&self) -> &Dev {
         match self {
             AnyDriver::VC4(vc4) => vc4.dev(),
-            AnyDriver::V3D(v3d) => v3d.dev()
+            AnyDriver::V3D(v3d) => v3d.dev(),
         }
+    }
+
+    /// Map the specified framebuffer handle to memory using the length of the
+    /// given byte slice, copy the contents of the memory buffer to the slice.
+    /// Copying the buffer is a good idea in any case since random access on the
+    /// original buffer seems slow.
+    pub fn copy<T: Sized + Copy>(&self, handle: u32, to: &mut [T]) -> Result<(), SystemError> {
+        let offset = self.mmap(handle)?;
+
+        let addr = core::ptr::null_mut();
+        let length = to.len() * size_of::<T>();
+        let prot = mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE;
+        let flags = mman::MapFlags::MAP_SHARED;
+
+        unsafe {
+            let map = mman::mmap(
+                addr,
+                length as _,
+                prot,
+                flags,
+                self.as_raw_fd(),
+                offset as _,
+            )
+            .unwrap();
+            let mapping: &mut [T] = std::slice::from_raw_parts_mut(map as *mut _, to.len());
+            to.copy_from_slice(mapping);
+            mman::munmap(map, length as _).unwrap();
+        };
+
+        Ok(())
     }
 }
 
-impl<Dev> Driver for AnyDriver<Dev> where Dev : DriverCard {
-    fn mmap(&self, handle : u32) -> Result<u64, SystemError> {
+impl<Dev> Driver for AnyDriver<Dev>
+where
+    Dev: DriverCard,
+{
+    fn mmap(&self, handle: u32) -> Result<u64, SystemError> {
         match self {
             AnyDriver::VC4(vc4) => vc4.mmap(handle),
             AnyDriver::V3D(v3d) => v3d.mmap(handle),
