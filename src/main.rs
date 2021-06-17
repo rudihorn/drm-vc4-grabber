@@ -5,6 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::net::TcpStream;
 
 use clap::{App, Arg};
+use drivers::DriverCard;
 use drm::control::framebuffer::Handle;
 use drm::control::Device as ControlDevice;
 use drm::Device;
@@ -17,7 +18,10 @@ use std::os::unix::io::{AsRawFd, RawFd};
 
 use std::io::Result as StdResult;
 
+pub mod drivers;
+
 pub mod ffi;
+pub mod framebuffer;
 pub mod hyperion;
 pub mod hyperion_reply_generated;
 pub mod hyperion_request_generated;
@@ -28,6 +32,8 @@ pub use hyperion_request_generated::hyperionnet::{Clear, Color, Command, Image, 
 use hyperion::{read_reply, register_direct, send_color_red, send_image};
 use image_decoder::{decode_small_image_multichannel, decode_tiled_small_image};
 
+use crate::drivers::driver::Driver;
+use crate::drivers::AnyDriver;
 use crate::image_decoder::{decode_image_multichannel, decode_small_image};
 
 struct Card(File);
@@ -40,6 +46,7 @@ impl AsRawFd for Card {
 
 impl Device for Card {}
 impl ControlDevice for Card {}
+impl DriverCard for Card {}
 
 impl Card {
     pub fn open(path: &str) -> Self {
@@ -48,20 +55,16 @@ impl Card {
         options.write(true);
         Card(options.open(path).unwrap())
     }
-
-    pub fn open_global() -> Self {
-        Self::open("/dev/dri/card0")
-    }
 }
 
 fn dump_buffer_to_image(
-    card: &mut Card,
+    driver: &mut AnyDriver<Card>,
     tiled: bool,
     size: (u32, u32),
     bpp: u32,
     handle: u32,
 ) -> RgbImage {
-    let offset = ffi::mmap_bo(card.as_raw_fd(), handle).unwrap();
+    let offset = driver.mmap(handle).unwrap();
 
     let tilesize = 32;
     let tile_count = |n| (n + tilesize - 1) / tilesize;
@@ -80,7 +83,7 @@ fn dump_buffer_to_image(
         let prot = mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE;
         let flags = mman::MapFlags::MAP_SHARED;
         let offset = offset as _;
-        unsafe { mman::mmap(addr, length as _, prot, flags, card.as_raw_fd(), offset).unwrap() }
+        unsafe { mman::mmap(addr, length as _, prot, flags, driver.as_raw_fd(), offset).unwrap() }
     };
 
     let img = if tiled {
@@ -104,13 +107,13 @@ fn dump_buffer_to_image(
 }
 
 fn dump_multichannel_to_image(
-    card: &mut Card,
+    driver: &mut AnyDriver<Card>,
     size: (u32, u32),
     pitches: [u32; 4],
     handles: [u32; 4],
     offsets: [u32; 4],
 ) -> RgbImage {
-    let offset = ffi::mmap_bo(card.as_raw_fd(), handles[0]).unwrap();
+    let offset = driver.mmap(handles[0]).unwrap();
 
     // The length of the entire buffer is the length of the last buffer plus its
     // offset (assuming they are in order). The U and V buffers are grouped into
@@ -123,7 +126,7 @@ fn dump_multichannel_to_image(
     let offset = (offset as u64) as _;
     let mut copy = vec![0; length as _];
     unsafe {
-        let map = mman::mmap(addr, length as _, prot, flags, card.as_raw_fd(), offset).unwrap();
+        let map = mman::mmap(addr, length as _, prot, flags, driver.as_raw_fd(), offset).unwrap();
         let mapping: &mut [u8] = std::slice::from_raw_parts_mut(map as *mut _, length as _);
         copy.copy_from_slice(mapping);
         mman::munmap(map, length as _).unwrap();
@@ -150,8 +153,8 @@ fn dump_multichannel_to_image(
     }
 }
 
-fn dump_framebuffer_to_image(card: &mut Card, fb: Handle) -> RgbImage {
-    let fbinfo2 = ffi::fb_cmd2(card.as_raw_fd(), fb.into()).unwrap();
+fn dump_framebuffer_to_image(driver: &mut AnyDriver<Card>, fb: Handle) -> RgbImage {
+    let fbinfo2 = ffi::fb_cmd2(driver.dev().as_raw_fd(), fb.into()).unwrap();
     //println!("  -> FB Info 2: {:?}", fbinfo2);
 
     let size = (fbinfo2.width, fbinfo2.height);
@@ -163,10 +166,10 @@ fn dump_framebuffer_to_image(card: &mut Card, fb: Handle) -> RgbImage {
     };
 
     if tiled {
-        dump_buffer_to_image(card, tiled, size, bpp, fbinfo2.handles[0])
+        dump_buffer_to_image(driver, tiled, size, bpp, fbinfo2.handles[0])
     } else {
         dump_multichannel_to_image(
-            card,
+            driver,
             size,
             fbinfo2.pitches,
             fbinfo2.handles,
@@ -188,8 +191,12 @@ fn send_dumped_image(socket: &mut TcpStream, img: &RgbImage) -> StdResult<()> {
     Ok(())
 }
 
-fn dump_and_send_framebuffer(socket: &mut TcpStream, card: &mut Card, fb: Handle) -> StdResult<()> {
-    let img = dump_framebuffer_to_image(card, fb);
+fn dump_and_send_framebuffer(
+    socket: &mut TcpStream,
+    driver: &mut AnyDriver<Card>,
+    fb: Handle,
+) -> StdResult<()> {
+    let img = dump_framebuffer_to_image(driver, fb);
     send_dumped_image(socket, &img)?;
 
     Ok(())
@@ -200,6 +207,13 @@ fn main() {
         .version("0.1.0")
         .author("Rudi Horn <dyn-git@rudi-horn.de>")
         .about("Captures a screenshot and sends it to the Hyperion server.")
+        .arg(
+            Arg::with_name("device")
+                .short("d")
+                .long("device")
+                .default_value("/dev/dri/card0")
+                .takes_value(true)
+                .help("The device path of the DRM device to capture the image from."))
         .arg(
             Arg::with_name("address")
                 .short("a")
@@ -216,14 +230,17 @@ fn main() {
         )
         .get_matches();
 
-    let mut card = Card::open_global();
+    let device_path = matches.value_of("device").unwrap();
+    let card = Card::open(device_path);
     let authenticated = card.authenticated().unwrap();
     let driver = card.get_driver().unwrap();
     println!("Driver (auth={}): {:?}", authenticated, driver);
 
+    let mut driver = AnyDriver::of(card).unwrap();
+
     if !authenticated {
-        let auth_token = card.generate_auth_token().unwrap();
-        card.authenticate_auth_token(auth_token).unwrap();
+        let auth_token = driver.dev().generate_auth_token().unwrap();
+        driver.dev().authenticate_auth_token(auth_token).unwrap();
     }
 
     let adress = matches.value_of("address").unwrap();
@@ -235,33 +252,33 @@ fn main() {
     sleep(1);
 
     loop {
-        let resource_handles = card.resource_handles().unwrap();
+        let resource_handles = driver.dev().resource_handles().unwrap();
 
         let mut already_sent = false;
 
         resource_handles.crtcs().into_iter().for_each(|crtc| {
-            let info = card.get_crtc(*crtc).unwrap();
+            let info = driver.dev().get_crtc(*crtc).unwrap();
             //println!("CRTC Info: {:?}", info);
 
             if info.mode().is_some() {
                 if let Some(fb) = info.framebuffer() {
-                    dump_and_send_framebuffer(&mut socket, &mut card, fb).unwrap();
+                    dump_and_send_framebuffer(&mut socket, &mut driver, fb).unwrap();
                     already_sent = true;
                 }
             }
         });
 
-        let plane_handles = card.plane_handles().unwrap();
+        let plane_handles = driver.dev().plane_handles().unwrap();
 
         if !already_sent {
             for plane in plane_handles.planes() {
-                let info = card.get_plane(*plane).unwrap();
+                let info = driver.dev().get_plane(*plane).unwrap();
                 //println!("Plane Info: {:?}", info);
 
                 if info.crtc().is_some() {
                     let fb = info.framebuffer().unwrap();
 
-                    dump_and_send_framebuffer(&mut socket, &mut card, fb).unwrap();
+                    dump_and_send_framebuffer(&mut socket, &mut driver, fb).unwrap();
                 }
             }
         }
