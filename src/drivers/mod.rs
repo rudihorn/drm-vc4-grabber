@@ -69,13 +69,21 @@ where
     /// given byte slice, copy the contents of the memory buffer to the slice.
     /// Copying the buffer is a good idea in any case since random access on the
     /// original buffer seems slow.
-    pub fn copy<T: Sized + Copy>(&self, handle: u32, to: &mut [T]) -> Result<(), SystemError> {
+    pub fn copy<T: Sized + Copy>(&self, handle: u32, to: &mut [T], verbose: bool) -> Result<(), SystemError> {
         let offset = self.mmap(handle)?;
 
         let addr = core::ptr::null_mut();
         let length = to.len() * size_of::<T>();
         let prot = mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE;
         let flags = mman::MapFlags::MAP_SHARED;
+
+        if verbose {
+            println!(
+                "  -> Mounting offset: @{}+{}",
+                offset,
+                length
+            );
+        }
 
         unsafe {
             let map = mman::mmap(

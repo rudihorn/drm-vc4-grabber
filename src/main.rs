@@ -75,21 +75,14 @@ fn dump_buffer_to_image(
         size.0 * size.1 * (bpp / 8)
     };
 
-    if verbose {
-        println!(
-            "  -> Mounting offset: @{}",
-            driver.mmap(handle).unwrap()
-        );
-    }
-
     let img = if tiled {
         let mut copy = vec![0; (length / 4) as _];
-        driver.copy(handle, &mut copy).unwrap();
+        driver.copy(handle, &mut copy, verbose).unwrap();
 
         decode_tiled_small_image(copy.as_mut_slice(), tilesize, tiles, size)
     } else {
         let mut copy = vec![0; length as _];
-        driver.copy(handle, &mut copy).unwrap();
+        driver.copy(handle, &mut copy, verbose).unwrap();
 
         decode_small_image(copy.as_mut_slice(), size)
     };
@@ -111,16 +104,8 @@ fn dump_multichannel_to_image(
     let length = offsets[2] + size.1 * pitches[2] * pitches[2] / pitches[0];
     //println!("  -> Mounting @{} +{}", offset, length);
 
-    if verbose {
-        println!(
-            "  -> Mounting offset: @{}+{}",
-            driver.mmap(handles[0]).unwrap(),
-            length
-        );
-    }
-
     let mut copy = vec![0; length as _];
-    driver.copy(handles[0], &mut copy).unwrap();
+    driver.copy(handles[0], &mut copy, verbose).unwrap();
 
     let buffer_range = |i| {
         offsets[i] as usize..(offsets[i] + size.1 * pitches[i] * pitches[i] / pitches[0]) as usize
