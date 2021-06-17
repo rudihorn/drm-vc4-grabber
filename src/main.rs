@@ -32,7 +32,7 @@ pub use hyperion_request_generated::hyperionnet::{Clear, Color, Command, Image, 
 use hyperion::{read_reply, register_direct, send_color_red, send_image};
 use image_decoder::{decode_small_image_multichannel, decode_tiled_small_image};
 
-use crate::drivers::AnyDriver;
+use crate::drivers::{AnyDriver, Driver};
 use crate::image_decoder::{decode_image_multichannel, decode_small_image};
 
 struct Card(File);
@@ -62,6 +62,7 @@ fn dump_buffer_to_image(
     size: (u32, u32),
     bpp: u32,
     handle: u32,
+    verbose: bool,
 ) -> RgbImage {
     let tilesize = 32;
     let tile_count = |n| (n + tilesize - 1) / tilesize;
@@ -73,6 +74,13 @@ fn dump_buffer_to_image(
     } else {
         size.0 * size.1 * (bpp / 8)
     };
+
+    if verbose {
+        println!(
+            "  -> Mounting offset: @{}",
+            driver.mmap(handle).unwrap()
+        );
+    }
 
     let img = if tiled {
         let mut copy = vec![0; (length / 4) as _];
@@ -95,12 +103,21 @@ fn dump_multichannel_to_image(
     pitches: [u32; 4],
     handles: [u32; 4],
     offsets: [u32; 4],
+    verbose: bool,
 ) -> RgbImage {
     // The length of the entire buffer is the length of the last buffer plus its
     // offset (assuming they are in order). The U and V buffers are grouped into
     // 2x2 tiles, hence the length is divided by 4.
     let length = offsets[2] + size.1 * pitches[2] * pitches[2] / pitches[0];
     //println!("  -> Mounting @{} +{}", offset, length);
+
+    if verbose {
+        println!(
+            "  -> Mounting offset: @{}+{}",
+            driver.mmap(handles[0]).unwrap(),
+            length
+        );
+    }
 
     let mut copy = vec![0; length as _];
     driver.copy(handles[0], &mut copy).unwrap();
@@ -142,7 +159,7 @@ fn dump_framebuffer_to_image(driver: &mut AnyDriver<Card>, fb: Handle, verbose: 
     };
 
     if tiled {
-        dump_buffer_to_image(driver, tiled, size, bpp, fbinfo2.handles[0])
+        dump_buffer_to_image(driver, tiled, size, bpp, fbinfo2.handles[0], verbose)
     } else {
         dump_multichannel_to_image(
             driver,
@@ -150,6 +167,7 @@ fn dump_framebuffer_to_image(driver: &mut AnyDriver<Card>, fb: Handle, verbose: 
             fbinfo2.pitches,
             fbinfo2.handles,
             fbinfo2.offsets,
+            verbose,
         )
     }
 }
