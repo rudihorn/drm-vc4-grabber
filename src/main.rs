@@ -59,7 +59,7 @@ impl Card {
     }
 }
 
-fn dump_sequential_to_image(
+fn dump_linear_to_image(
     driver: &mut AnyDriver<Card>,
     pitch: u32,
     size: (u32, u32),
@@ -67,6 +67,8 @@ fn dump_sequential_to_image(
     handle: u32,
     verbose: bool,
 ) -> RgbImage {
+    let size = (size.0, size.1/64);
+
     let length = pitch * size.1 / (bpp / 8);
 
     println!("size: {:?}, pitch: {}, bpp: {}, length: {}", size, pitch, bpp, length);
@@ -152,7 +154,7 @@ fn dump_framebuffer_to_image(driver: &mut AnyDriver<Card>, fb: Handle, verbose: 
             DrmModifier::Broadcom_vc4_t_tiled => {
                 dump_broadcom_tiled_to_image(driver, size, 32, fbinfo2.handles[0], verbose)
             }
-            DrmModifier::Linear => dump_sequential_to_image(
+            DrmModifier::Linear => dump_linear_to_image(
                 driver,
                 fbinfo2.pitches[0],
                 size,
