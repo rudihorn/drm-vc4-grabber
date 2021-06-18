@@ -39,8 +39,8 @@ pub struct RgbPixel {
 }
 
 impl RgbPixel {
-    pub fn new(r : u8, g : u8, b : u8) -> RgbPixel {
-        RgbPixel {dat : [r, g, b] }
+    pub fn new(r: u8, g: u8, b: u8) -> RgbPixel {
+        RgbPixel { dat: [r, g, b] }
     }
 }
 
@@ -89,20 +89,20 @@ impl ToRgb for YUV420Pixel {
     }
 }
 
-pub fn decode_small_image(mapping: &[u8], size: (u32, u32)) -> RgbImage {
+pub fn decode_image(mapping: &[u32], pitch: u32, size: (u32, u32)) -> RgbImage {
     let mut img = RgbImage::new(size.0, size.1);
+
+    let bytepitch = pitch / 4;
 
     for y in 0..size.1 {
         for x in 0..size.0 {
-            let offset: usize = (y * size.0 + x) as _;
+            let offset = y * bytepitch + x;
+            let v = mapping[offset as usize];
+            let byte = |i| {(v >> i*8) as u8};
 
-            unsafe {
-                img.unsafe_put_pixel(
-                    x,
-                    y,
-                    Rgb([mapping[offset], mapping[offset], mapping[offset]]),
-                )
-            };
+            let px = Rgb([byte(2), (byte(1)), (byte(0))]);
+
+            unsafe { img.unsafe_put_pixel(x, y, px) };
         }
     }
 

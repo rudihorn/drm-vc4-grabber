@@ -36,7 +36,7 @@ use hyperion::{read_reply, register_direct, send_color_red, send_image};
 use image_decoder::{decode_small_image_multichannel, decode_tiled_small_image};
 
 use crate::drivers::AnyDriver;
-use crate::image_decoder::{decode_image_multichannel, decode_small_image};
+use crate::image_decoder::{decode_image, decode_image_multichannel};
 
 struct Card(File);
 
@@ -61,17 +61,19 @@ impl Card {
 
 fn dump_sequential_to_image(
     driver: &mut AnyDriver<Card>,
+    pitch: u32,
     size: (u32, u32),
     bpp: u32,
     handle: u32,
     verbose: bool,
 ) -> RgbImage {
-    let length = size.0 * size.1 * (bpp / 8);
+    let length = pitch * size.1 / (bpp / 8);
 
-    let mut copy = vec![0; length as _];
+    println!("size: {:?}, pitch: {}, bpp: {}, length: {}", size, pitch, bpp, length);
+    let mut copy = vec![0u32; length as _];
     driver.copy(handle, &mut copy, verbose).unwrap();
 
-    decode_small_image(copy.as_mut_slice(), size)
+    decode_image(copy.as_mut_slice(), pitch, size)
 }
 
 fn dump_broadcom_tiled_to_image(
@@ -150,9 +152,14 @@ fn dump_framebuffer_to_image(driver: &mut AnyDriver<Card>, fb: Handle, verbose: 
             DrmModifier::Broadcom_vc4_t_tiled => {
                 dump_broadcom_tiled_to_image(driver, size, 32, fbinfo2.handles[0], verbose)
             }
-            DrmModifier::Unrecognized(0) => {
-                dump_sequential_to_image(driver, size, 32, fbinfo2.handles[0], verbose)
-            }
+            DrmModifier::Linear => dump_sequential_to_image(
+                driver,
+                fbinfo2.pitches[0],
+                size,
+                32,
+                fbinfo2.handles[0],
+                verbose,
+            ),
             _ => panic!("Unknown framebuffer modifier: {:?}", modifier),
         },
         DrmFourcc::Yuv420 => dump_yuv420_to_image(
