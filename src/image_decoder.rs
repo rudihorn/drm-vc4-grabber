@@ -30,16 +30,38 @@ impl PixelAverage {
     }
 }
 
-pub struct YUV420 {
+pub trait ToRgb {
+    fn rgb(&self) -> Rgb<u8>;
+}
+
+pub struct RgbPixel {
     dat: [u8; 3],
 }
 
-impl YUV420 {
-    pub fn new(c: u8, d: u8, e: u8) -> YUV420 {
-        YUV420 { dat: [c, d, e] }
+impl RgbPixel {
+    pub fn new(r : u8, g : u8, b : u8) -> RgbPixel {
+        RgbPixel {dat : [r, g, b] }
     }
+}
 
-    pub fn rgb(&self) -> Rgb<u8> {
+impl ToRgb for RgbPixel {
+    fn rgb(&self) -> Rgb<u8> {
+        Rgb(self.dat)
+    }
+}
+
+pub struct YUV420Pixel {
+    dat: [u8; 3],
+}
+
+impl YUV420Pixel {
+    pub fn new(c: u8, d: u8, e: u8) -> YUV420Pixel {
+        YUV420Pixel { dat: [c, d, e] }
+    }
+}
+
+impl ToRgb for YUV420Pixel {
+    fn rgb(&self) -> Rgb<u8> {
         let y = self.dat[0] as i32;
         let u = self.dat[1] as i32;
         let v = self.dat[2] as i32;
@@ -99,7 +121,7 @@ pub fn decode_image_multichannel(
             let offset: usize = (y * pitches[0] + x) as _;
             let offset1: usize = ((y / 2) * (pitches[1]) + x / 2) as _;
             let offset2: usize = ((y / 2) * (pitches[2]) + x / 2) as _;
-            let yuv = YUV420::new(
+            let yuv = YUV420Pixel::new(
                 mappings[0][offset],
                 mappings[1][offset1],
                 mappings[2][offset2],
@@ -131,7 +153,7 @@ pub fn decode_small_image_multichannel(
                 + yat(offset + pitches[0] as usize)
                 + yat(offset + pitches[0] as usize + 1))
                 / 4;
-            let yuv = YUV420::new(yval as _, mappings[1][offset1], mappings[2][offset2]);
+            let yuv = YUV420Pixel::new(yval as _, mappings[1][offset1], mappings[2][offset2]);
 
             unsafe { img.unsafe_put_pixel(x, y, yuv.rgb()) };
         }

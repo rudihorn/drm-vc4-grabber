@@ -1,7 +1,9 @@
 #[macro_use]
 extern crate nix;
 
+use std::convert::TryFrom;
 use std::fs::{File, OpenOptions};
+use std::marker::PhantomData;
 use std::net::TcpStream;
 
 use clap::{App, Arg};
@@ -9,9 +11,10 @@ use drivers::DriverCard;
 use drm::control::framebuffer::Handle;
 use drm::control::Device as ControlDevice;
 use drm::Device;
+use drm_fourcc::{DrmFourcc, DrmModifier};
 
+use framebuffer::{Framebuffer, YUV420};
 use image::{ImageError, RgbImage};
-use nix::sys::mman;
 use nix::unistd::sleep;
 
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -32,7 +35,7 @@ pub use hyperion_request_generated::hyperionnet::{Clear, Color, Command, Image, 
 use hyperion::{read_reply, register_direct, send_color_red, send_image};
 use image_decoder::{decode_small_image_multichannel, decode_tiled_small_image};
 
-use crate::drivers::{AnyDriver, Driver};
+use crate::drivers::AnyDriver;
 use crate::image_decoder::{decode_image_multichannel, decode_small_image};
 
 struct Card(File);
@@ -56,9 +59,23 @@ impl Card {
     }
 }
 
-fn dump_buffer_to_image(
+fn dump_sequential_to_image(
     driver: &mut AnyDriver<Card>,
-    tiled: bool,
+    size: (u32, u32),
+    bpp: u32,
+    handle: u32,
+    verbose: bool,
+) -> RgbImage {
+    let length = size.0 * size.1 * (bpp / 8);
+
+    let mut copy = vec![0; length as _];
+    driver.copy(handle, &mut copy, verbose).unwrap();
+
+    decode_small_image(copy.as_mut_slice(), size)
+}
+
+fn dump_broadcom_tiled_to_image(
+    driver: &mut AnyDriver<Card>,
     size: (u32, u32),
     bpp: u32,
     handle: u32,
@@ -69,28 +86,15 @@ fn dump_buffer_to_image(
     let tiles = (tile_count(size.0), tile_count(size.1));
     let total_tiles = tiles.0 * tiles.1;
 
-    let length = if tiled {
-        total_tiles * tilesize * tilesize * (bpp / 8)
-    } else {
-        size.0 * size.1 * (bpp / 8)
-    };
+    let length = total_tiles * tilesize * tilesize * (bpp / 8);
 
-    let img = if tiled {
-        let mut copy = vec![0; (length / 4) as _];
-        driver.copy(handle, &mut copy, verbose).unwrap();
+    let mut copy = vec![0; (length / 4) as _];
+    driver.copy(handle, &mut copy, verbose).unwrap();
 
-        decode_tiled_small_image(copy.as_mut_slice(), tilesize, tiles, size)
-    } else {
-        let mut copy = vec![0; length as _];
-        driver.copy(handle, &mut copy, verbose).unwrap();
-
-        decode_small_image(copy.as_mut_slice(), size)
-    };
-
-    img
+    decode_tiled_small_image(copy.as_mut_slice(), tilesize, tiles, size)
 }
 
-fn dump_multichannel_to_image(
+fn dump_yuv420_to_image(
     driver: &mut AnyDriver<Card>,
     size: (u32, u32),
     pitches: [u32; 4],
@@ -137,27 +141,33 @@ fn dump_framebuffer_to_image(driver: &mut AnyDriver<Card>, fb: Handle, verbose: 
 
     let size = (fbinfo2.width, fbinfo2.height);
     let tiled = fbinfo2.modifier[0] > 0;
-    let bpp = match fbinfo2.pixel_format {
-        842093913 => 24, // YUV420
-        875713112 => 32, // XBGR32
-        _ => 32,         // unknown
-    };
 
-    if tiled {
-        dump_buffer_to_image(driver, tiled, size, bpp, fbinfo2.handles[0], verbose)
-    } else {
-        dump_multichannel_to_image(
+    let fourcc = drm_fourcc::DrmFourcc::try_from(fbinfo2.pixel_format).unwrap();
+    let modifier = drm_fourcc::DrmModifier::try_from(fbinfo2.modifier[0]).unwrap();
+
+    match fourcc {
+        DrmFourcc::Xrgb8888 => match modifier {
+            DrmModifier::Broadcom_vc4_t_tiled => {
+                dump_broadcom_tiled_to_image(driver, size, 32, fbinfo2.handles[0], verbose)
+            }
+            DrmModifier::Unrecognized(0) => {
+                dump_sequential_to_image(driver, size, 32, fbinfo2.handles[0], verbose)
+            }
+            _ => panic!("Unknown framebuffer modifier: {:?}", modifier),
+        },
+        DrmFourcc::Yuv420 => dump_yuv420_to_image(
             driver,
             size,
             fbinfo2.pitches,
             fbinfo2.handles,
             fbinfo2.offsets,
             verbose,
-        )
+        ),
+        _ => panic!("Unknown framebuffer pixel format: {}", fourcc),
     }
 }
 
-fn screenshot(img: &RgbImage) -> Result<(), ImageError> {
+fn save_screenshot(img: &RgbImage) -> Result<(), ImageError> {
     img.save("screenshot.png")
 }
 
@@ -180,6 +190,42 @@ fn dump_and_send_framebuffer(
     send_dumped_image(socket, &img)?;
 
     Ok(())
+}
+
+fn find_framebuffer(driver: &mut AnyDriver<Card>, verbose: bool) -> Option<Handle> {
+    let resource_handles = driver.dev().resource_handles().unwrap();
+
+    for crtc in resource_handles.crtcs() {
+        let info = driver.dev().get_crtc(*crtc).unwrap();
+
+        if verbose {
+            println!("CRTC Info: {:?}", info);
+        }
+
+        if info.mode().is_some() {
+            if let Some(fb) = info.framebuffer() {
+                return Some(fb);
+            }
+        }
+    }
+
+    let plane_handles = driver.dev().plane_handles().unwrap();
+
+    for plane in plane_handles.planes() {
+        let info = driver.dev().get_plane(*plane).unwrap();
+
+        if verbose {
+            println!("Plane Info: {:?}", info);
+        }
+
+        if info.crtc().is_some() {
+            let fb = info.framebuffer().unwrap();
+
+            return Some(fb);
+        }
+    }
+
+    None
 }
 
 fn main() {
@@ -218,6 +264,7 @@ fn main() {
         .get_matches();
 
     let verbose = matches.is_present("verbose");
+    let screenshot = matches.is_present("screenshot");
     let device_path = matches.value_of("device").unwrap();
     let card = Card::open(device_path);
     let authenticated = card.authenticated().unwrap();
@@ -235,48 +282,26 @@ fn main() {
     }
 
     let adress = matches.value_of("address").unwrap();
-    let mut socket = TcpStream::connect(adress).unwrap();
-    register_direct(&mut socket).unwrap();
-    read_reply(&mut socket).unwrap();
+    if screenshot {
+        if let Some(fb) = find_framebuffer(&mut driver, verbose) {
+            let img = dump_framebuffer_to_image(&mut driver, fb, verbose);
+            save_screenshot(&img).unwrap();
+        } else {
+            println!("No framebuffer found!");
+        }
+    } else {
+        let mut socket = TcpStream::connect(adress).unwrap();
+        register_direct(&mut socket).unwrap();
+        read_reply(&mut socket).unwrap();
 
-    send_color_red(&mut socket).unwrap();
-    sleep(1);
+        send_color_red(&mut socket).unwrap();
+        sleep(1);
 
-    loop {
-        let resource_handles = driver.dev().resource_handles().unwrap();
-
-        let mut already_sent = false;
-
-        resource_handles.crtcs().into_iter().for_each(|crtc| {
-            let info = driver.dev().get_crtc(*crtc).unwrap();
-
-            if verbose {
-                println!("CRTC Info: {:?}", info);
-            }
-
-            if info.mode().is_some() {
-                if let Some(fb) = info.framebuffer() {
-                    dump_and_send_framebuffer(&mut socket, &mut driver, fb, verbose).unwrap();
-                    already_sent = true;
-                }
-            }
-        });
-
-        let plane_handles = driver.dev().plane_handles().unwrap();
-
-        if !already_sent {
-            for plane in plane_handles.planes() {
-                let info = driver.dev().get_plane(*plane).unwrap();
-
-                if verbose {
-                    println!("Plane Info: {:?}", info);
-                }
-
-                if info.crtc().is_some() {
-                    let fb = info.framebuffer().unwrap();
-
-                    dump_and_send_framebuffer(&mut socket, &mut driver, fb, verbose).unwrap();
-                }
+        loop {
+            if let Some(fb) = find_framebuffer(&mut driver, verbose) {
+                dump_and_send_framebuffer(&mut socket, &mut driver, fb, verbose).unwrap();
+            } else {
+                sleep(1);
             }
         }
     }
