@@ -74,7 +74,7 @@ where
 
         let addr = core::ptr::null_mut();
         let length = to.len() * size_of::<T>();
-        let prot = mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE;
+        let prot = mman::ProtFlags::PROT_READ;
         let flags = mman::MapFlags::MAP_SHARED;
 
         if verbose {
