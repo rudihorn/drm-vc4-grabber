@@ -2,7 +2,10 @@ pub mod driver;
 pub mod v3ddriver;
 pub mod vc4driver;
 
-use std::{mem::size_of, os::unix::prelude::{AsRawFd, RawFd}};
+use std::{
+    mem::size_of,
+    os::unix::prelude::{AsRawFd, RawFd},
+};
 
 pub use driver::{Driver, DriverCard};
 pub use drm::Device;
@@ -69,7 +72,15 @@ where
     /// given byte slice, copy the contents of the memory buffer to the slice.
     /// Copying the buffer is a good idea in any case since random access on the
     /// original buffer seems slow.
-    pub fn copy<T: Sized + Copy>(&self, handle: u32, to: &mut [T], verbose: bool) -> Result<(), SystemError> {
+    pub fn copy<T: Sized + Copy>(
+        &self,
+        handle: u32,
+        to: &mut [T],
+        verbose: bool,
+    ) -> Result<(), SystemError> {
+        if !self.prepare(handle)? {
+            panic!("Could not prepare buffer for mmaping, the buffer may be purged.");
+        }
         let offset = self.mmap(handle)?;
 
         let addr = core::ptr::null_mut();
@@ -78,11 +89,7 @@ where
         let flags = mman::MapFlags::MAP_SHARED;
 
         if verbose {
-            println!(
-                "  -> Mounting offset: @{}+{}",
-                offset,
-                length
-            );
+            println!("  -> Mounting offset: @{}+{}", offset, length);
         }
 
         unsafe {
@@ -108,6 +115,13 @@ impl<Dev> Driver for AnyDriver<Dev>
 where
     Dev: DriverCard,
 {
+    fn prepare(&self, handle: u32) -> Result<bool, SystemError> {
+        match self {
+            AnyDriver::VC4(vc4) => vc4.prepare(handle),
+            AnyDriver::V3D(v3d) => v3d.prepare(handle),
+        }
+    }
+
     fn mmap(&self, handle: u32) -> Result<u64, SystemError> {
         match self {
             AnyDriver::VC4(vc4) => vc4.mmap(handle),

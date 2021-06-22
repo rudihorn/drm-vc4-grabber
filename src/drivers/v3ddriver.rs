@@ -53,7 +53,7 @@ mod drmv3d {
         Ok(mmap.offset)
     }
 
-    pub fn create_bo(fd: RawFd, size: u32, flags: u32) -> Result<u32, SystemError> {
+    pub fn _create_bo(fd: RawFd, size: u32, flags: u32) -> Result<u32, SystemError> {
         let mut create = DrmCreateBo {
             size,
             flags,
@@ -102,6 +102,10 @@ impl<Dev> Driver for V3DDriver<Dev>
 where
     Dev: Device + ControlDevice + AsRawFd,
 {
+    fn prepare(&self, _handle: u32) -> Result<bool, SystemError> {
+        Ok(true)
+    }
+
     fn mmap(&self, handle: u32) -> Result<u64, SystemError> {
         drmv3d::mmap_bo(self.device.as_raw_fd(), handle)
     }

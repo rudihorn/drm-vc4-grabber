@@ -7,5 +7,6 @@ use std::os::unix::io::AsRawFd;
 pub trait DriverCard: Device + ControlDevice + AsRawFd {}
 
 pub trait Driver {
+    fn prepare(&self, handle: u32) -> Result<bool, SystemError>;
     fn mmap(&self, handle: u32) -> Result<u64, SystemError>;
 }

@@ -3,7 +3,6 @@ extern crate nix;
 
 use std::convert::TryFrom;
 use std::fs::{File, OpenOptions};
-use std::marker::PhantomData;
 use std::net::TcpStream;
 
 use clap::{App, Arg};
@@ -13,7 +12,6 @@ use drm::control::Device as ControlDevice;
 use drm::Device;
 use drm_fourcc::{DrmFourcc, DrmModifier};
 
-use framebuffer::{Framebuffer, YUV420};
 use image::{ImageError, RgbImage};
 use nix::unistd::sleep;
 
@@ -67,11 +65,14 @@ fn dump_linear_to_image(
     handle: u32,
     verbose: bool,
 ) -> RgbImage {
-    let size = (size.0, size.1/64);
+    let size = (size.0, size.1 / 64);
 
     let length = pitch * size.1 / (bpp / 8);
 
-    println!("size: {:?}, pitch: {}, bpp: {}, length: {}", size, pitch, bpp, length);
+    println!(
+        "size: {:?}, pitch: {}, bpp: {}, length: {}",
+        size, pitch, bpp, length
+    );
     let mut copy = vec![0u32; length as _];
     driver.copy(handle, &mut copy, verbose).unwrap();
 
@@ -144,7 +145,6 @@ fn dump_framebuffer_to_image(driver: &mut AnyDriver<Card>, fb: Handle, verbose: 
     }
 
     let size = (fbinfo2.width, fbinfo2.height);
-    let tiled = fbinfo2.modifier[0] > 0;
 
     let fourcc = drm_fourcc::DrmFourcc::try_from(fbinfo2.pixel_format).unwrap();
     let modifier = drm_fourcc::DrmModifier::try_from(fbinfo2.modifier[0]).unwrap();
