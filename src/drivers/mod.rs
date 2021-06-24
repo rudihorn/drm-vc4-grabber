@@ -78,8 +78,8 @@ where
         to: &mut [T],
         verbose: bool,
     ) -> Result<(), SystemError> {
-        if !self.prepare(handle)? {
-            panic!("Could not prepare buffer for mmaping, the buffer may be purged.");
+        if !self.prepare(handle).unwrap_or(true) && verbose {
+            println!("Could not prepare buffer for mmaping, the buffer may be purged.");
         }
         let offset = self.mmap(handle)?;
 

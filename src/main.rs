@@ -162,7 +162,21 @@ fn dump_framebuffer_to_image(driver: &mut AnyDriver<Card>, fb: Handle, verbose: 
                 fbinfo2.handles[0],
                 verbose,
             ),
-            _ => panic!("Unknown framebuffer modifier: {:?}", modifier),
+            _ => panic!("Unsupported framebuffer modifier: {:?}", modifier),
+        },
+        DrmFourcc::Argb8888 => match modifier {
+            DrmModifier::Broadcom_vc4_t_tiled => {
+                dump_broadcom_tiled_to_image(driver, size, 32, fbinfo2.handles[0], verbose)
+            }
+            DrmModifier::Linear => dump_linear_to_image(
+                driver,
+                fbinfo2.pitches[0],
+                size,
+                32,
+                fbinfo2.handles[0],
+                verbose,
+            ),
+            _ => panic!("Unsupported framebuffer modifier: {:?}", modifier),
         },
         DrmFourcc::Yuv420 => dump_yuv420_to_image(
             driver,
@@ -172,7 +186,7 @@ fn dump_framebuffer_to_image(driver: &mut AnyDriver<Card>, fb: Handle, verbose: 
             fbinfo2.offsets,
             verbose,
         ),
-        _ => panic!("Unknown framebuffer pixel format: {}", fourcc),
+        _ => panic!("Unsupported framebuffer pixel format: {}", fourcc),
     }
 }
 
