@@ -34,7 +34,7 @@ use hyperion::{read_reply, register_direct, send_color_red, send_image};
 use image_decoder::{decode_small_image_multichannel, decode_tiled_small_image};
 
 use crate::drivers::AnyDriver;
-use crate::image_decoder::{decode_image, decode_image_multichannel};
+use crate::image_decoder::{decode_image, decode_image_multichannel, rgb565_to_rgb888};
 
 struct Card(File);
 
@@ -77,6 +77,28 @@ fn dump_linear_to_image(
     driver.copy(handle, &mut copy, verbose).unwrap();
 
     decode_image(copy.as_mut_slice(), pitch, size)
+}
+
+fn dump_rgb565_to_image(
+    driver: &mut AnyDriver<Card>,
+    pitch: u32,
+    size: (u32, u32),
+    bpp: u32,
+    handle: u32,
+    verbose: bool,
+) -> RgbImage {
+    // let size = (size.0, size.1 / 64);
+
+    let length = pitch * size.1 / (bpp / 8);
+
+    println!(
+        "size: {:?}, pitch: {}, bpp: {}, length: {}",
+        size, pitch, bpp, length
+    );
+    let mut copy = vec![0u16; length as _];
+    driver.copy(handle, &mut copy, verbose).unwrap();
+
+    rgb565_to_rgb888(copy.as_mut_slice(), pitch, size)
 }
 
 fn dump_broadcom_tiled_to_image(
@@ -186,7 +208,19 @@ fn dump_framebuffer_to_image(driver: &mut AnyDriver<Card>, fb: Handle, verbose: 
             fbinfo2.offsets,
             verbose,
         ),
-        _ => panic!("Unsupported framebuffer pixel format: {}", fourcc),
+        DrmFourcc::Rgb565 => dump_rgb565_to_image(
+            driver,
+            fbinfo2.pitches[0],
+            size,
+            16,
+            fbinfo2.handles[0],
+            verbose,
+        ),
+
+        _ => panic!(
+            "Unsupported framebuffer pixel format: {} {:x}",
+            fourcc, fbinfo2.pixel_format
+        ),
     }
 }
 

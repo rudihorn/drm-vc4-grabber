@@ -89,6 +89,43 @@ impl ToRgb for YUV420Pixel {
     }
 }
 
+pub struct Rgb565 {
+    dat: u16,
+}
+
+impl Rgb565 {
+    fn new(dat: u16) -> Self {
+        Rgb565 { dat }
+    }
+}
+
+impl ToRgb for Rgb565 {
+    fn rgb(&self) -> Rgb<u8> {
+        let byte = |i, c| (((1 << c) - 1) as u16 & (self.dat >> i)) as u8;
+
+        let r8 = (byte(11, 5) as u16 * 527 + 23) >> 6;
+        let g8 = (byte(5, 6) as u16 * 259 + 33) >> 6;
+        let b8 = (byte(0, 5) as u16 * 527 + 23) >> 6;
+        Rgb([r8 as u8, g8 as u8, b8 as u8])
+    }
+}
+
+pub fn rgb565_to_rgb888(mapping: &[u16], pitch: u32, size: (u32, u32)) -> RgbImage {
+    let mut img = RgbImage::new(size.0, size.1);
+
+    let bytepitch = pitch / 2;
+
+    for y in 0..size.1 {
+        for x in 0..size.0 {
+            let offset = y * bytepitch + x;
+            let v = Rgb565::new(mapping[offset as usize]);
+
+            unsafe { img.unsafe_put_pixel(x, y, v.rgb()) };
+        }
+    }
+    img
+}
+
 pub fn decode_image(mapping: &[u32], pitch: u32, size: (u32, u32)) -> RgbImage {
     let mut img = RgbImage::new(size.0, size.1);
 
@@ -98,7 +135,7 @@ pub fn decode_image(mapping: &[u32], pitch: u32, size: (u32, u32)) -> RgbImage {
         for x in 0..size.0 {
             let offset = y * bytepitch + x;
             let v = mapping[offset as usize];
-            let byte = |i| {(v >> i*8) as u8};
+            let byte = |i| (v >> i * 8) as u8;
 
             let px = Rgb([byte(2), (byte(1)), (byte(0))]);
 
