@@ -4,18 +4,20 @@ extern crate nix;
 use std::convert::TryFrom;
 use std::fs::{File, OpenOptions};
 use std::net::TcpStream;
+use std::os::fd::AsFd;
 
 use clap::{App, Arg};
 use drivers::DriverCard;
 use drm::control::framebuffer::Handle;
 use drm::control::Device as ControlDevice;
 use drm::Device;
+use drm_ffi::drm_set_client_cap;
 use drm_fourcc::{DrmFourcc, DrmModifier};
 
 use image::{ImageError, RgbImage};
-use nix::unistd::sleep;
 
 use std::os::unix::io::{AsRawFd, RawFd};
+use std::{thread, time::Duration};
 
 use std::io::Result as StdResult;
 
@@ -44,6 +46,12 @@ impl AsRawFd for Card {
     }
 }
 
+impl AsFd for Card {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.0.as_fd()
+    }
+}
+
 impl Device for Card {}
 impl ControlDevice for Card {}
 impl DriverCard for Card {}
@@ -52,7 +60,7 @@ impl Card {
     pub fn open(path: &str) -> Self {
         let mut options = OpenOptions::new();
         options.read(true);
-        options.write(true);
+        options.write(false);
         Card(options.open(path).unwrap())
     }
 }
@@ -65,7 +73,7 @@ fn dump_linear_to_image(
     handle: u32,
     verbose: bool,
 ) -> RgbImage {
-    let size = (size.0, size.1 / 64);
+    let size = (size.0, size.1);
 
     let length = pitch * size.1 / (bpp / 8);
 
@@ -336,6 +344,12 @@ fn main() {
     if !authenticated {
         let auth_token = driver.dev().generate_auth_token().unwrap();
         driver.dev().authenticate_auth_token(auth_token).unwrap();
+        driver.dev().acquire_master_lock().unwrap();
+    }
+
+    unsafe {
+        let set_cap = drm_set_client_cap{ capability: drm_ffi::DRM_CLIENT_CAP_UNIVERSAL_PLANES as u64, value: 1 };
+        drm_ffi::ioctl::set_cap(driver.dev().as_raw_fd(), &set_cap).unwrap();
     }
 
     let adress = matches.value_of("address").unwrap();
@@ -352,13 +366,13 @@ fn main() {
         read_reply(&mut socket).unwrap();
 
         send_color_red(&mut socket).unwrap();
-        sleep(1);
+        thread::sleep(Duration::from_secs(1));
 
         loop {
             if let Some(fb) = find_framebuffer(&mut driver, verbose) {
                 dump_and_send_framebuffer(&mut socket, &mut driver, fb, verbose).unwrap();
             } else {
-                sleep(1);
+                thread::sleep(Duration::from_secs(1));
             }
         }
     }

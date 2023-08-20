@@ -10,6 +10,7 @@ use std::{
 pub use driver::{Driver, DriverCard};
 pub use drm::Device;
 use drm_ffi::result::SystemError;
+use libc::c_void;
 use nix::sys::mman;
 pub use v3ddriver::V3DDriver;
 pub use vc4driver::VC4Driver;
@@ -81,27 +82,12 @@ where
         if !self.prepare(handle).unwrap_or(true) && verbose {
             println!("Could not prepare buffer for mmaping, the buffer may be purged.");
         }
-        let offset = self.mmap(handle)?;
+        println!("Using handle {}", handle);
 
-        let addr = core::ptr::null_mut();
         let length = to.len() * size_of::<T>();
-        let prot = mman::ProtFlags::PROT_READ;
-        let flags = mman::MapFlags::MAP_SHARED;
-
-        if verbose {
-            println!("  -> Mounting offset: @{}+{}", offset, length);
-        }
+        let map = self.mmap(handle, length as _)?;
 
         unsafe {
-            let map = mman::mmap(
-                addr,
-                length as _,
-                prot,
-                flags,
-                self.as_raw_fd(),
-                offset as _,
-            )
-            .unwrap();
             let mapping: &mut [T] = std::slice::from_raw_parts_mut(map as *mut _, to.len());
             to.copy_from_slice(mapping);
             mman::munmap(map, length as _).unwrap();
@@ -122,10 +108,10 @@ where
         }
     }
 
-    fn mmap(&self, handle: u32) -> Result<u64, SystemError> {
+    fn mmap(&self, handle: u32, length: u64) -> Result<*mut c_void, SystemError> {
         match self {
-            AnyDriver::VC4(vc4) => vc4.mmap(handle),
-            AnyDriver::V3D(v3d) => v3d.mmap(handle),
+            AnyDriver::VC4(vc4) => vc4.mmap(handle, length),
+            AnyDriver::V3D(v3d) => v3d.mmap(handle, length),
         }
     }
 }

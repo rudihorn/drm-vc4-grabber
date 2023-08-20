@@ -1,5 +1,6 @@
 use super::driver::Driver;
 use drm_ffi::result::SystemError;
+use libc::c_void;
 use std::os::unix::{io::AsRawFd, prelude::RawFd};
 
 use super::driver::DriverCard;
@@ -10,9 +11,13 @@ pub enum Madvise {
 }
 
 mod drmvc4 {
+    use crate::ffi::prime_handle_to_fd;
+
     use super::Madvise;
     use drm_ffi::result::SystemError;
     use drm_sys::*;
+    use libc::c_void;
+    use nix::sys::mman;
     use std::os::unix::prelude::RawFd;
 
     #[repr(C)]
@@ -60,33 +65,25 @@ mod drmvc4 {
         DrmGemMadvise
     );
 
-    pub fn mmap_bo(fd: RawFd, handle: u32) -> Result<u64, SystemError> {
-        let mut mmap = DrmMmapBo {
-            handle,
-            flags: 0,
-            offset: 0,
-        };
+    pub fn mmap_bo(fd: RawFd, handle: u32, length: u64) -> Result<*mut c_void, SystemError> {
 
+        let hfd = prime_handle_to_fd(fd, handle)?;
+        println!("handle fd {}", hfd);
+
+        let addr = core::ptr::null_mut();
+        let prot = mman::ProtFlags::PROT_READ;
+        let flags = mman::MapFlags::MAP_SHARED;
         unsafe {
-            drm_vc4_mmap_bo(fd, &mut mmap)?;
+            let map = mman::mmap(
+                addr,
+                length as _,
+                prot,
+                flags,
+                hfd,
+                0,
+            ).unwrap();
+            return Ok(map);
         }
-
-        Ok(mmap.offset)
-    }
-
-    pub fn _create_bo(fd: RawFd, size: u32, flags: u32) -> Result<u32, SystemError> {
-        let mut create = DrmCreateBo {
-            size,
-            flags,
-            handle: 0,
-            pad: 0,
-        };
-
-        unsafe {
-            drm_vc4_create_bo(fd, &mut create)?;
-        }
-
-        Ok(create.handle)
     }
 
     pub fn gem_madvise(fd: RawFd, handle: u32, madv: Madvise) -> Result<bool, SystemError> {
@@ -147,7 +144,7 @@ where
         self.gem_madvise(handle, Madvise::WillNeed)
     }
 
-    fn mmap(&self, handle: u32) -> Result<u64, SystemError> {
-        drmvc4::mmap_bo(self.device.as_raw_fd(), handle)
+    fn mmap(&self, handle: u32, length: u64) -> Result<*mut c_void, SystemError> {
+        drmvc4::mmap_bo(self.device.as_raw_fd(), handle, length)
     }
 }

@@ -5,7 +5,7 @@ authors = ["Rudi <dyn-git@rudi-horn.de>"]
 edition = "2018"
 
 [dependencies]
-libc = "0.2.95"
+libc = "0.2.148"
 drm = "0.4.0"
 nix = "0.20.0"
 drm-ffi = "0.1.0"

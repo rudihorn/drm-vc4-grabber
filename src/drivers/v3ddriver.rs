@@ -2,6 +2,8 @@ use super::{driver::Driver, DriverCard};
 use drm::control::Device as ControlDevice;
 use drm::Device;
 use drm_ffi::result::SystemError;
+use libc::c_void;
+
 use std::os::unix::{io::AsRawFd, prelude::RawFd};
 
 mod drmv3d {
@@ -39,7 +41,7 @@ mod drmv3d {
         DrmMmapBo
     );
 
-    pub fn mmap_bo(fd: RawFd, handle: u32) -> Result<u64, SystemError> {
+    pub fn _mmap_bo(fd: RawFd, handle: u32) -> Result<u64, SystemError> {
         let mut mmap = DrmMmapBo {
             handle,
             flags: 0,
@@ -106,7 +108,7 @@ where
         Ok(true)
     }
 
-    fn mmap(&self, handle: u32) -> Result<u64, SystemError> {
-        drmv3d::mmap_bo(self.device.as_raw_fd(), handle)
+    fn mmap(&self, _handle: u32, _length: u64) -> Result<*mut c_void, SystemError> {
+        todo!();
     }
 }
