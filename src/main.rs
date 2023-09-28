@@ -1,19 +1,17 @@
 #[macro_use]
 extern crate nix;
 
-use std::convert::TryFrom;
 use std::fs::{File, OpenOptions};
 use std::net::TcpStream;
 use std::os::fd::AsFd;
 
 use clap::{App, Arg};
-use drivers::DriverCard;
 use drm::control::framebuffer::Handle;
 use drm::control::Device as ControlDevice;
 use drm::Device;
 use drm_ffi::drm_set_client_cap;
-use drm_fourcc::{DrmFourcc, DrmModifier};
 
+use dump_image::dump_framebuffer_to_image;
 use image::{ImageError, RgbImage};
 
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -21,24 +19,19 @@ use std::{thread, time::Duration};
 
 use std::io::Result as StdResult;
 
-pub mod drivers;
-
 pub mod ffi;
 pub mod framebuffer;
 pub mod hyperion;
 pub mod hyperion_reply_generated;
 pub mod hyperion_request_generated;
 pub mod image_decoder;
+pub mod dump_image;
 
 pub use hyperion_request_generated::hyperionnet::{Clear, Color, Command, Image, Register};
 
 use hyperion::{read_reply, register_direct, send_color_red, send_image};
-use image_decoder::{decode_small_image_multichannel, decode_tiled_small_image};
 
-use crate::drivers::AnyDriver;
-use crate::image_decoder::{decode_image, decode_image_multichannel, rgb565_to_rgb888};
-
-struct Card(File);
+pub struct Card(File);
 
 impl AsRawFd for Card {
     fn as_raw_fd(&self) -> RawFd {
@@ -54,7 +47,6 @@ impl AsFd for Card {
 
 impl Device for Card {}
 impl ControlDevice for Card {}
-impl DriverCard for Card {}
 
 impl Card {
     pub fn open(path: &str) -> Self {
@@ -62,173 +54,6 @@ impl Card {
         options.read(true);
         options.write(false);
         Card(options.open(path).unwrap())
-    }
-}
-
-fn dump_linear_to_image(
-    driver: &mut AnyDriver<Card>,
-    pitch: u32,
-    size: (u32, u32),
-    bpp: u32,
-    handle: u32,
-    verbose: bool,
-) -> RgbImage {
-    let size = (size.0, size.1);
-
-    let length = pitch * size.1 / (bpp / 8);
-
-    println!(
-        "size: {:?}, pitch: {}, bpp: {}, length: {}",
-        size, pitch, bpp, length
-    );
-    let mut copy = vec![0u32; length as _];
-    driver.copy(handle, &mut copy, verbose).unwrap();
-
-    decode_image(copy.as_mut_slice(), pitch, size)
-}
-
-fn dump_rgb565_to_image(
-    driver: &mut AnyDriver<Card>,
-    pitch: u32,
-    size: (u32, u32),
-    bpp: u32,
-    handle: u32,
-    verbose: bool,
-) -> RgbImage {
-    // let size = (size.0, size.1 / 64);
-
-    let length = pitch * size.1 / (bpp / 8);
-
-    println!(
-        "size: {:?}, pitch: {}, bpp: {}, length: {}",
-        size, pitch, bpp, length
-    );
-    let mut copy = vec![0u16; length as _];
-    driver.copy(handle, &mut copy, verbose).unwrap();
-
-    rgb565_to_rgb888(copy.as_mut_slice(), pitch, size)
-}
-
-fn dump_broadcom_tiled_to_image(
-    driver: &mut AnyDriver<Card>,
-    size: (u32, u32),
-    bpp: u32,
-    handle: u32,
-    verbose: bool,
-) -> RgbImage {
-    let tilesize = 32;
-    let tile_count = |n| (n + tilesize - 1) / tilesize;
-    let tiles = (tile_count(size.0), tile_count(size.1));
-    let total_tiles = tiles.0 * tiles.1;
-
-    let length = total_tiles * tilesize * tilesize * (bpp / 8);
-
-    let mut copy = vec![0; (length / 4) as _];
-    driver.copy(handle, &mut copy, verbose).unwrap();
-
-    decode_tiled_small_image(copy.as_mut_slice(), tilesize, tiles, size)
-}
-
-fn dump_yuv420_to_image(
-    driver: &mut AnyDriver<Card>,
-    size: (u32, u32),
-    pitches: [u32; 4],
-    handles: [u32; 4],
-    offsets: [u32; 4],
-    verbose: bool,
-) -> RgbImage {
-    // The length of the entire buffer is the length of the last buffer plus its
-    // offset (assuming they are in order). The U and V buffers are grouped into
-    // 2x2 tiles, hence the length is divided by 4.
-    let length = offsets[2] + size.1 * pitches[2] * pitches[2] / pitches[0];
-    //println!("  -> Mounting @{} +{}", offset, length);
-
-    let mut copy = vec![0; length as _];
-    driver.copy(handles[0], &mut copy, verbose).unwrap();
-
-    let buffer_range = |i| {
-        offsets[i] as usize..(offsets[i] + size.1 * pitches[i] * pitches[i] / pitches[0]) as usize
-    };
-
-    let mappings = [
-        &copy[buffer_range(0)],
-        &copy[buffer_range(1)],
-        &copy[buffer_range(2)],
-    ];
-
-    let mut pitches1 = [0; 3];
-    pitches1.copy_from_slice(&pitches[0..3]);
-
-    if size.0 > 640 {
-        // If the image is large then just decode a smaller image
-        decode_small_image_multichannel(mappings, size, pitches1)
-    } else {
-        decode_image_multichannel(mappings, size, pitches1)
-    }
-}
-
-fn dump_framebuffer_to_image(driver: &mut AnyDriver<Card>, fb: Handle, verbose: bool) -> RgbImage {
-    let fbinfo2 = ffi::fb_cmd2(driver.dev().as_raw_fd(), fb.into()).unwrap();
-
-    if verbose {
-        println!("  -> FB Info 2: {:?}", fbinfo2);
-    }
-
-    let size = (fbinfo2.width, fbinfo2.height);
-
-    let fourcc = drm_fourcc::DrmFourcc::try_from(fbinfo2.pixel_format).unwrap();
-    let modifier = drm_fourcc::DrmModifier::try_from(fbinfo2.modifier[0]).unwrap();
-
-    match fourcc {
-        DrmFourcc::Xrgb8888 => match modifier {
-            DrmModifier::Broadcom_vc4_t_tiled => {
-                dump_broadcom_tiled_to_image(driver, size, 32, fbinfo2.handles[0], verbose)
-            }
-            DrmModifier::Linear => dump_linear_to_image(
-                driver,
-                fbinfo2.pitches[0],
-                size,
-                32,
-                fbinfo2.handles[0],
-                verbose,
-            ),
-            _ => panic!("Unsupported framebuffer modifier: {:?}", modifier),
-        },
-        DrmFourcc::Argb8888 => match modifier {
-            DrmModifier::Broadcom_vc4_t_tiled => {
-                dump_broadcom_tiled_to_image(driver, size, 32, fbinfo2.handles[0], verbose)
-            }
-            DrmModifier::Linear => dump_linear_to_image(
-                driver,
-                fbinfo2.pitches[0],
-                size,
-                32,
-                fbinfo2.handles[0],
-                verbose,
-            ),
-            _ => panic!("Unsupported framebuffer modifier: {:?}", modifier),
-        },
-        DrmFourcc::Yuv420 => dump_yuv420_to_image(
-            driver,
-            size,
-            fbinfo2.pitches,
-            fbinfo2.handles,
-            fbinfo2.offsets,
-            verbose,
-        ),
-        DrmFourcc::Rgb565 => dump_rgb565_to_image(
-            driver,
-            fbinfo2.pitches[0],
-            size,
-            16,
-            fbinfo2.handles[0],
-            verbose,
-        ),
-
-        _ => panic!(
-            "Unsupported framebuffer pixel format: {} {:x}",
-            fourcc, fbinfo2.pixel_format
-        ),
     }
 }
 
@@ -247,21 +72,21 @@ fn send_dumped_image(socket: &mut TcpStream, img: &RgbImage) -> StdResult<()> {
 
 fn dump_and_send_framebuffer(
     socket: &mut TcpStream,
-    driver: &mut AnyDriver<Card>,
+    card: &Card,
     fb: Handle,
     verbose: bool,
 ) -> StdResult<()> {
-    let img = dump_framebuffer_to_image(driver, fb, verbose);
+    let img = dump_framebuffer_to_image(card, fb, verbose);
     send_dumped_image(socket, &img)?;
 
     Ok(())
 }
 
-fn find_framebuffer(driver: &mut AnyDriver<Card>, verbose: bool) -> Option<Handle> {
-    let resource_handles = driver.dev().resource_handles().unwrap();
+fn find_framebuffer(card: &Card, verbose: bool) -> Option<Handle> {
+    let resource_handles = card.resource_handles().unwrap();
 
     for crtc in resource_handles.crtcs() {
-        let info = driver.dev().get_crtc(*crtc).unwrap();
+        let info = card.get_crtc(*crtc).unwrap();
 
         if verbose {
             println!("CRTC Info: {:?}", info);
@@ -274,10 +99,10 @@ fn find_framebuffer(driver: &mut AnyDriver<Card>, verbose: bool) -> Option<Handl
         }
     }
 
-    let plane_handles = driver.dev().plane_handles().unwrap();
+    let plane_handles = card.plane_handles().unwrap();
 
     for plane in plane_handles.planes() {
-        let info = driver.dev().get_plane(*plane).unwrap();
+        let info = card.get_plane(*plane).unwrap();
 
         if verbose {
             println!("Plane Info: {:?}", info);
@@ -339,23 +164,15 @@ fn main() {
         println!("Driver (auth={}): {:?}", authenticated, driver);
     }
 
-    let mut driver = AnyDriver::of(card).unwrap();
-
-    if !authenticated {
-        let auth_token = driver.dev().generate_auth_token().unwrap();
-        driver.dev().authenticate_auth_token(auth_token).unwrap();
-        driver.dev().acquire_master_lock().unwrap();
-    }
-
     unsafe {
         let set_cap = drm_set_client_cap{ capability: drm_ffi::DRM_CLIENT_CAP_UNIVERSAL_PLANES as u64, value: 1 };
-        drm_ffi::ioctl::set_cap(driver.dev().as_raw_fd(), &set_cap).unwrap();
+        drm_ffi::ioctl::set_cap(card.as_raw_fd(), &set_cap).unwrap();
     }
 
     let adress = matches.value_of("address").unwrap();
     if screenshot {
-        if let Some(fb) = find_framebuffer(&mut driver, verbose) {
-            let img = dump_framebuffer_to_image(&mut driver, fb, verbose);
+        if let Some(fb) = find_framebuffer(&card, verbose) {
+            let img = dump_framebuffer_to_image(&card, fb, verbose);
             save_screenshot(&img).unwrap();
         } else {
             println!("No framebuffer found!");
@@ -369,8 +186,8 @@ fn main() {
         thread::sleep(Duration::from_secs(1));
 
         loop {
-            if let Some(fb) = find_framebuffer(&mut driver, verbose) {
-                dump_and_send_framebuffer(&mut socket, &mut driver, fb, verbose).unwrap();
+            if let Some(fb) = find_framebuffer(&card, verbose) {
+                dump_and_send_framebuffer(&mut socket, &card, fb, verbose).unwrap();
             } else {
                 thread::sleep(Duration::from_secs(1));
             }
