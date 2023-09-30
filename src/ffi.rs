@@ -5,7 +5,6 @@ use std::os::unix::prelude::RawFd;
 
 ioctl_readwrite!(drm_mode_getfb2, DRM_IOCTL_BASE, 0xCE, drm_mode_fb_cmd2);
 
-
 pub fn fb_cmd2(fd: RawFd, handle: u32) -> Result<drm_mode_fb_cmd2, SystemError> {
     let mut fb = drm_mode_fb_cmd2 {
         fb_id: handle,
@@ -24,4 +23,35 @@ pub fn fb_cmd2(fd: RawFd, handle: u32) -> Result<drm_mode_fb_cmd2, SystemError> 
     }
 
     Ok(fb)
+}
+
+ioctl_readwrite!(drm_prime_handle_to_fd, DRM_IOCTL_BASE, 0x2D, drm_prime_handle);
+
+pub fn prime_handle_to_fd(fd: RawFd, handle: u32) -> Result<RawFd, SystemError> {
+    let mut ph = drm_prime_handle {
+        handle,
+        flags: 0,
+        fd: 0,
+    };
+
+    unsafe {
+        drm_prime_handle_to_fd(fd, &mut ph)?;
+    }
+
+    Ok(ph.fd)
+}
+
+ioctl_write_ptr!(drm_gem_close_ioctl, DRM_IOCTL_BASE, 0x09, drm_gem_close);
+
+pub fn gem_close(fd: RawFd, handle: u32) -> Result<(), SystemError> {
+    let mut ph = drm_gem_close {
+        handle,
+        pad: 0,
+    };
+
+    unsafe {
+        drm_gem_close_ioctl(fd, &mut ph)?;
+    }
+
+    Ok(())
 }

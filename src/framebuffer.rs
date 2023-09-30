@@ -86,7 +86,6 @@ impl Framebuffer<YUV420Pixel> for FramebufferYUV420 {
 }
 
 pub struct FramebufferCopy<'a, P> {
-    data: &'a [u8],
     fb: &'a dyn Framebuffer<P>,
 }
 

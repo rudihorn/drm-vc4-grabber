@@ -9,7 +9,7 @@ use std::io::Result as StdResult;
 use crate::hyperion_reply_generated::hyperionnet as reply;
 use crate::hyperion_request_generated::hyperionnet as request;
 
-pub fn read_reply(socket: &mut TcpStream) -> StdResult<()> {
+pub fn read_reply(socket: &mut TcpStream, verbose : bool) -> StdResult<()> {
     let mut size = [0u8; 4];
     socket.read_exact(&mut size)?;
 
@@ -17,9 +17,11 @@ pub fn read_reply(socket: &mut TcpStream) -> StdResult<()> {
     let mut msg = vec![0; v];
     socket.read_exact(&mut msg)?;
 
-    let _request = reply::root_as_reply(&msg).unwrap();
+    let request = reply::root_as_reply(&msg).unwrap();
 
-    // println!("Response {:?}", request);
+    if verbose {
+        println!("Response {:?}", request);
+    }
 
     Ok(())
 }
@@ -53,17 +55,19 @@ pub fn register_direct(socket: &mut TcpStream) -> StdResult<()> {
     Ok(())
 }
 
-pub fn send_image(socket: &mut TcpStream, image: & RgbImage) -> StdResult<()> {
+pub fn send_image(socket: &mut TcpStream, image: & RgbImage, verbose: bool) -> StdResult<()> {
     let mut builder = FlatBufferBuilder::new();
 
     let raw_bytes = image.as_bytes();
 
-    /* println!(
-        "Sending image {}x{} (size: {})",
-        image.width(),
-        image.height(),
-        raw_bytes.len()
-    ); */
+    if verbose {
+        println!(
+            "Sending image {}x{} (size: {})",
+            image.width(),
+            image.height(),
+            raw_bytes.len()
+        );
+    }
 
     let data = builder.create_vector(&raw_bytes);
     let raw_image = request::RawImage::create(
@@ -99,12 +103,12 @@ pub fn send_image(socket: &mut TcpStream, image: & RgbImage) -> StdResult<()> {
     socket.write_all(dat)?;
     socket.flush()?;
 
-    read_reply(socket)?;
+    read_reply(socket, verbose)?;
 
     Ok(())
 }
 
-pub fn send_color_red(socket: &mut TcpStream) -> StdResult<()> {
+pub fn send_color_red(socket: &mut TcpStream, verbose: bool) -> StdResult<()> {
     println!("Setting color");
     let mut builder = flatbuffers::FlatBufferBuilder::new();
 
@@ -131,7 +135,7 @@ pub fn send_color_red(socket: &mut TcpStream) -> StdResult<()> {
     socket.write_all(dat)?;
     socket.flush()?;
 
-    read_reply(socket)?;
+    read_reply(socket, verbose)?;
 
     Ok(())
 }
