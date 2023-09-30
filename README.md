@@ -61,3 +61,14 @@ CRTC Info: Info { handle: crtc::Handle(69), position: (0, 0), mode: None, fb: No
 CRTC Info: Info { handle: crtc::Handle(76), position: (0, 0), mode: None, fb: None, gamma_length: 256 }
 CRTC Info: Info { handle: crtc::Handle(83), position: (0, 0), mode: Some(Mode { name: "1920x1080", clock: 148500, size: (1920, 1080), hsync: (2008, 2052, 2200), vsync: (1084, 1089, 1125), hskew: 0, vscan: 0, vrefresh: 60 }), fb: None, gamma_length: 256 }
 ```
+
+## Donations
+
+I am in no way dependent on any donations, and am not asking for any support.
+However, if you would still like to show your appreciation you may do so using
+either of the following methods:
+
+| Paypal                                                                                                      | Bitcoin                                                                                                  |
+|-------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
+| [![paypal](https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif)](https://www.paypal.me/rudihppal) | [bitcoin:bc1qjantllys0pg3zvsr97krxzz9dxzlmxmgy5qk4v](bitcoin:bc1qjantllys0pg3zvsr97krxzz9dxzlmxmgy5qk4v) |
+
