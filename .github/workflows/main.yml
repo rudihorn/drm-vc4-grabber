@@ -5,7 +5,7 @@ on:
     - 'v[0-9]+.[0-9]+.[0-9]+'
 
 env:
-  BIN_NAME: drm-grabber
+  BIN_NAME: drm-vc4-grabber
   PROJECT_NAME: drm-vc4-grabber
   REPO_NAME: rudihorn/drm-vc4-grabber
 
@@ -69,11 +69,7 @@ jobs:
         shell: bash
         run: |
           mkdir dist
-          if [ "${{ matrix.os }}" = "windows-2019" ]; then
-            cp "target/${{ matrix.target }}/release/$BIN_NAME.exe" "dist/"
-          else
-            cp "target/${{ matrix.target }}/release/$BIN_NAME" "dist/"
-          fi
+          cp "target/${{ matrix.target }}/release/$BIN_NAME" "dist/"
 
       - uses: actions/upload-artifact@v2.2.4
         with:
@@ -115,21 +111,13 @@ jobs:
 
           for dir in bins-* ; do
               platform=${dir#"bins-"}
-              unset exe
-              if [[ $platform =~ "windows" ]]; then
-                  exe=".exe"
-              fi
               pkgname=$PROJECT_NAME-$TAG-$platform
               mkdir tmp/$pkgname
               # cp LICENSE README.md tmp/$pkgname
               mv bins-$platform/$BIN_NAME$exe tmp/$pkgname
               chmod +x tmp/$pkgname/$BIN_NAME$exe
 
-              if [ "$exe" = "" ]; then
-                  tar cJf dist/$pkgname.tar.xz -C tmp $pkgname
-              else
-                  (cd tmp && 7z a -r ../dist/$pkgname.zip $pkgname)
-              fi
+              tar cJf dist/$pkgname.tar.xz -C tmp $pkgname
           done
 
       - name: Upload binaries to release
