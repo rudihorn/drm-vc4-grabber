@@ -4,6 +4,7 @@ use drm::SystemError;
 use drm::control::framebuffer::Handle;
 use drm_fourcc::{DrmFourcc, DrmModifier};
 use image::RgbImage;
+use libc::close;
 use nix::sys::mman;
 
 use crate::{Card, ffi::{self, gem_close}, image_decoder::{decode_image, rgb565_to_rgb888, decode_tiled_small_image, decode_small_image_multichannel, decode_image_multichannel}};
@@ -40,6 +41,9 @@ fn copy_buffer<T: Sized + Copy>(
         to.copy_from_slice(mapping);
         mman::munmap(map, length as _).unwrap();
 
+        if close(hfd) == -1 {
+            panic!("Failed to close prime fd.");
+        };
     }
 
     Ok(())
@@ -52,7 +56,7 @@ fn dump_linear_to_image(
     bpp: u32,
     handle: u32,
     verbose: bool,
-) -> RgbImage {
+) -> Result<RgbImage, SystemError> {
     let size = (size.0, size.1);
 
     let length = pitch * size.1 / (bpp / 8);
@@ -62,9 +66,9 @@ fn dump_linear_to_image(
         size, pitch, bpp, length
     );
     let mut copy = vec![0u32; length as _];
-    copy_buffer(card, handle, &mut copy, verbose).unwrap();
+    copy_buffer(card, handle, &mut copy, verbose)?;
 
-    decode_image(copy.as_mut_slice(), pitch, size)
+    Ok(decode_image(copy.as_mut_slice(), pitch, size))
 }
 
 fn dump_rgb565_to_image(
@@ -74,7 +78,7 @@ fn dump_rgb565_to_image(
     bpp: u32,
     handle: u32,
     verbose: bool,
-) -> RgbImage {
+) -> Result<RgbImage, SystemError> {
     // let size = (size.0, size.1 / 64);
 
     let length = pitch * size.1 / (bpp / 8);
@@ -84,9 +88,9 @@ fn dump_rgb565_to_image(
         size, pitch, bpp, length
     );
     let mut copy = vec![0u16; length as _];
-    copy_buffer(card, handle, &mut copy, verbose).unwrap();
+    copy_buffer(card, handle, &mut copy, verbose)?;
 
-    rgb565_to_rgb888(copy.as_mut_slice(), pitch, size)
+    Ok(rgb565_to_rgb888(copy.as_mut_slice(), pitch, size))
 }
 
 fn dump_broadcom_tiled_to_image(
@@ -95,7 +99,7 @@ fn dump_broadcom_tiled_to_image(
     bpp: u32,
     handle: u32,
     verbose: bool,
-) -> RgbImage {
+) -> Result<RgbImage, SystemError> {
     let tilesize = 32;
     let tile_count = |n| (n + tilesize - 1) / tilesize;
     let tiles = (tile_count(size.0), tile_count(size.1));
@@ -104,9 +108,9 @@ fn dump_broadcom_tiled_to_image(
     let length = total_tiles * tilesize * tilesize * (bpp / 8);
 
     let mut copy = vec![0; (length / 4) as _];
-    copy_buffer(card, handle, &mut copy, verbose).unwrap();
+    copy_buffer(card, handle, &mut copy, verbose)?;
 
-    decode_tiled_small_image(copy.as_mut_slice(), tilesize, tiles, size)
+    Ok(decode_tiled_small_image(copy.as_mut_slice(), tilesize, tiles, size))
 }
 
 fn dump_yuv420_to_image(
@@ -116,7 +120,7 @@ fn dump_yuv420_to_image(
     handles: [u32; 4],
     offsets: [u32; 4],
     verbose: bool,
-) -> RgbImage {
+) -> Result<RgbImage, SystemError> {
     // The length of the entire buffer is the length of the last buffer plus its
     // offset (assuming they are in order). The U and V buffers are grouped into
     // 2x2 tiles, hence the length is divided by 4.
@@ -124,7 +128,7 @@ fn dump_yuv420_to_image(
     //println!("  -> Mounting @{} +{}", offset, length);
 
     let mut copy = vec![0; length as _];
-    copy_buffer(card, handles[0], &mut copy, verbose).unwrap();
+    copy_buffer(card, handles[0], &mut copy, verbose)?;
 
     let buffer_range = |i| {
         offsets[i] as usize..(offsets[i] + size.1 * pitches[i] * pitches[i] / pitches[0]) as usize
@@ -141,9 +145,9 @@ fn dump_yuv420_to_image(
 
     if size.0 > 640 {
         // If the image is large then just decode a smaller image
-        decode_small_image_multichannel(mappings, size, pitches1)
+        Ok(decode_small_image_multichannel(mappings, size, pitches1))
     } else {
-        decode_image_multichannel(mappings, size, pitches1)
+        Ok(decode_image_multichannel(mappings, size, pitches1))
     }
 }
 
@@ -159,7 +163,7 @@ pub fn dump_framebuffer_to_image(card: &Card, fb: Handle, verbose: bool) -> Resu
     let fourcc = drm_fourcc::DrmFourcc::try_from(fbinfo2.pixel_format).unwrap();
     let modifier = drm_fourcc::DrmModifier::try_from(fbinfo2.modifier[0]).unwrap();
 
-    let image = match fourcc {
+    let image_result = match fourcc {
         DrmFourcc::Xrgb8888 => match modifier {
             DrmModifier::Broadcom_vc4_t_tiled => {
                 dump_broadcom_tiled_to_image(card, size, 32, fbinfo2.handles[0], verbose)
@@ -212,6 +216,8 @@ pub fn dump_framebuffer_to_image(card: &Card, fb: Handle, verbose: bool) -> Resu
     };
 
     gem_close(card.as_raw_fd(), fbinfo2.handles[0]).unwrap();
+
+    let image = image_result?;
 
     Ok(image)
 }
