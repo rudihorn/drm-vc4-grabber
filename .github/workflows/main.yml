@@ -1,60 +1,28 @@
 name: Release
 on:
-  # schedule:
-  # - cron: '0 0 * * *' # midnight UTC
-
   push:
     tags:
     - 'v[0-9]+.[0-9]+.[0-9]+'
-    ## - release
 
 env:
   BIN_NAME: drm-grabber
   PROJECT_NAME: drm-vc4-grabber
-  REPO_NAME: B83C/drm-vc4-grabber
- # BREW_TAP: jondot/homebrew-tap
+  REPO_NAME: rudihorn/drm-vc4-grabber
 
 jobs:
   dist:
     name: Dist
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false # don't fail other jobs if one fails
+      fail-fast: false
       matrix:
-        build: [aarch64-linux] #, x86_64-win-gnu, win32-msvc
+        build: [aarch64-linux]
         include:
-        #- build: x86_64-linux
-        #  os: ubuntu-20.04
-        #  rust: stable
-        #  target: x86_64-unknown-linux-gnu
-        #  cross: false
         - build: aarch64-linux
           os: ubuntu-20.04
           rust: stable
           target: aarch64-unknown-linux-gnu
           cross: true
-        #- build: x86_64-macos
-        #  os: macos-latest
-        #  rust: stable
-        # target: x86_64-apple-darwin
-        #  cross: false
-        #- build: x86_64-windows
-        #  os: windows-2019
-        #  rust: stable
-        #  target: x86_64-pc-windows-msvc
-        #  cross: false
-        # - build: aarch64-macos
-        #   os: macos-latest
-        #   rust: stable
-        #   target: aarch64-apple-darwin
-        # - build: x86_64-win-gnu
-        #   os: windows-2019
-        #   rust: stable-x86_64-gnu
-        #   target: x86_64-pc-windows-gnu
-        # - build: win32-msvc
-        #   os: windows-2019
-        #   rust: stable
-        #   target: i686-pc-windows-msvc
 
     steps:
       - name: Checkout sources
@@ -123,9 +91,7 @@ jobs:
           submodules: false
 
       - uses: actions/download-artifact@v2
-        # with:
-        #   path: dist
-      # - run: ls -al ./dist
+
       - run: ls -al bins-*
 
       - name: Calculate tag name
@@ -188,34 +154,3 @@ jobs:
           commit-message: updating formula for ${{ env.PROJECT_NAME }}
         env:
           COMMITTER_TOKEN: ${{ secrets.COMMITTER_TOKEN }}
-        #
-        # you can use this initial file in your homebrew-tap if you don't have an initial formula:
-        # <projectname>.rb
-        #
-        # class <Projectname capitalized> < Formula
-        #   desc "A test formula"
-        #   homepage "http://www.example.com"
-        #   url "-----"
-        #   version "-----"
-        #   sha256 "-----"
-
-        #   def install
-        #     bin.install "<bin-name>"
-        #   end
-        # end
-
-      
-      # Uncomment this section if you want to release your package to crates.io
-      # Before publishing, make sure you have filled out the following fields:
-      # license or license-file, description, homepage, documentation, repository, readme.
-      # Read more: https://doc.rust-lang.org/cargo/reference/publishing.html
-
-      # - name: Install ${{ matrix.rust }} toolchain
-      #   uses: actions-rs/toolchain@v1
-      #   with:
-      #     profile: minimal
-      #     toolchain: ${{ matrix.rust }}
-      #     target: ${{ matrix.target }}
-      # - run: cargo publish --token ${CRATES_TOKEN}
-      #  env:
-      #    CRATES_TOKEN: ${{ secrets.CRATES_TOKEN }}
