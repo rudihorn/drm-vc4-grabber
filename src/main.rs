@@ -61,11 +61,11 @@ fn save_screenshot(img: &RgbImage) -> Result<(), ImageError> {
     img.save("screenshot.png")
 }
 
-fn send_dumped_image(socket: &mut TcpStream, img: &RgbImage) -> StdResult<()> {
+fn send_dumped_image(socket: &mut TcpStream, img: &RgbImage, verbose : bool) -> StdResult<()> {
     register_direct(socket)?;
-    read_reply(socket)?;
+    read_reply(socket, verbose)?;
 
-    send_image(socket, img)?;
+    send_image(socket, img, verbose)?;
 
     Ok(())
 }
@@ -77,7 +77,11 @@ fn dump_and_send_framebuffer(
     verbose: bool,
 ) -> StdResult<()> {
     let img = dump_framebuffer_to_image(card, fb, verbose);
-    send_dumped_image(socket, &img)?;
+    if let Ok(img) = img {
+        send_dumped_image(socket, &img, verbose)?;
+    } else {
+        println!("Error dumping framebuffer to image.");
+    }
 
     Ok(())
 }
@@ -172,7 +176,7 @@ fn main() {
     let adress = matches.value_of("address").unwrap();
     if screenshot {
         if let Some(fb) = find_framebuffer(&card, verbose) {
-            let img = dump_framebuffer_to_image(&card, fb, verbose);
+            let img = dump_framebuffer_to_image(&card, fb, verbose).unwrap();
             save_screenshot(&img).unwrap();
         } else {
             println!("No framebuffer found!");
@@ -180,9 +184,9 @@ fn main() {
     } else {
         let mut socket = TcpStream::connect(adress).unwrap();
         register_direct(&mut socket).unwrap();
-        read_reply(&mut socket).unwrap();
+        read_reply(&mut socket, verbose).unwrap();
 
-        send_color_red(&mut socket).unwrap();
+        send_color_red(&mut socket, verbose).unwrap();
         thread::sleep(Duration::from_secs(1));
 
         loop {

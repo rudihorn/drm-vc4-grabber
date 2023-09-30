@@ -6,7 +6,7 @@ use drm_fourcc::{DrmFourcc, DrmModifier};
 use image::RgbImage;
 use nix::sys::mman;
 
-use crate::{Card, ffi, image_decoder::{decode_image, rgb565_to_rgb888, decode_tiled_small_image, decode_small_image_multichannel, decode_image_multichannel}};
+use crate::{Card, ffi::{self, gem_close}, image_decoder::{decode_image, rgb565_to_rgb888, decode_tiled_small_image, decode_small_image_multichannel, decode_image_multichannel}};
 
 
 fn copy_buffer<T: Sized + Copy>(
@@ -147,8 +147,8 @@ fn dump_yuv420_to_image(
     }
 }
 
-pub fn dump_framebuffer_to_image(card: &Card, fb: Handle, verbose: bool) -> RgbImage {
-    let fbinfo2 = ffi::fb_cmd2(card.as_raw_fd(), fb.into()).unwrap();
+pub fn dump_framebuffer_to_image(card: &Card, fb: Handle, verbose: bool) -> Result<RgbImage, SystemError> {
+    let fbinfo2 = ffi::fb_cmd2(card.as_raw_fd(), fb.into())?;
 
     if verbose {
         println!("  -> FB Info 2: {:?}", fbinfo2);
@@ -159,7 +159,7 @@ pub fn dump_framebuffer_to_image(card: &Card, fb: Handle, verbose: bool) -> RgbI
     let fourcc = drm_fourcc::DrmFourcc::try_from(fbinfo2.pixel_format).unwrap();
     let modifier = drm_fourcc::DrmModifier::try_from(fbinfo2.modifier[0]).unwrap();
 
-    match fourcc {
+    let image = match fourcc {
         DrmFourcc::Xrgb8888 => match modifier {
             DrmModifier::Broadcom_vc4_t_tiled => {
                 dump_broadcom_tiled_to_image(card, size, 32, fbinfo2.handles[0], verbose)
@@ -209,5 +209,9 @@ pub fn dump_framebuffer_to_image(card: &Card, fb: Handle, verbose: bool) -> RgbI
             "Unsupported framebuffer pixel format: {} {:x}",
             fourcc, fbinfo2.pixel_format
         ),
-    }
+    };
+
+    gem_close(card.as_raw_fd(), fbinfo2.handles[0]).unwrap();
+
+    Ok(image)
 }

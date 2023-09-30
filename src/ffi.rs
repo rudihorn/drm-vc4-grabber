@@ -40,3 +40,18 @@ pub fn prime_handle_to_fd(fd: RawFd, handle: u32) -> Result<RawFd, SystemError> 
 
     Ok(ph.fd)
 }
+
+ioctl_write_ptr!(drm_gem_close_ioctl, DRM_IOCTL_BASE, 0x09, drm_gem_close);
+
+pub fn gem_close(fd: RawFd, handle: u32) -> Result<(), SystemError> {
+    let mut ph = drm_gem_close {
+        handle,
+        pad: 0,
+    };
+
+    unsafe {
+        drm_gem_close_ioctl(fd, &mut ph)?;
+    }
+
+    Ok(())
+}
