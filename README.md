@@ -17,9 +17,15 @@ is also some other interlacing or similar I have not quite figured out yet.
 The current implementation connects to Hyperion at `127.0.0.1:19400` and
 directly uploads the images.
 
+## Usage
+
+1. Download the latest release archive.
+2. Extract the archive, e.g. `tar xvf drm-vc4-grabber-v0.1.0-aarch64-linux.tar.xz`
+3. Run the grabber in the background, e.g. `nohup ./drm-vc4-grabber-v0.1.0-aarch64-linux/drm-vc4-grabber`
+
 ## Compiling
 
-1. Ensure rust is installed (with rustup and cargo). 
+1. Ensure rust is installed (with rustup and cargo).
 2. Install the target toolchain for raspberry pi: `rustup target install armv7-unknown-linux-gnueabihf`.
 3. Ensure the linker for this toolchain is installed, e.g. `sudo apt install binutils-arm-none-eabi`
 4. Set the linker in your env var: `export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=/usr/bin/arm-linux-gnueabihf-gcc`
