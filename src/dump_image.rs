@@ -49,6 +49,19 @@ fn copy_buffer<T: Sized + Copy>(
     Ok(())
 }
 
+fn decimate_image_4(size : (usize, usize), image : &[u32], copy : &mut [u32]) {
+    let decim  = (4, 4);
+    let newsize = (size.0 / decim.0, size.1 / decim.1);
+
+    for y in 0..newsize.1 {
+        let ty = decim.1 * y;
+        for x in 0..newsize.0 {
+            let tx = decim.0 * x;
+            copy[y * newsize.0 + x] = image[ty * size.1 + tx];
+        }
+    }
+}
+
 fn dump_linear_to_image(
     card: &Card,
     pitch: u32,
@@ -62,13 +75,16 @@ fn dump_linear_to_image(
     let length = pitch * size.1 / (bpp / 8);
 
     println!(
-        "size: {:?}, pitch: {}, bpp: {}, length: {}",
+        "linear, size: {:?}, pitch: {}, bpp: {}, length: {}",
         size, pitch, bpp, length
     );
     let mut copy = vec![0u32; length as _];
     copy_buffer(card, handle, &mut copy, verbose)?;
 
-    Ok(decode_image(copy.as_mut_slice(), pitch, size))
+    let mut dec = vec![0u32; (length / (4 * 4)) as _];
+    decimate_image_4((size.0 as _, size.1 as _), copy.as_slice(), dec.as_mut_slice());
+
+    Ok(decode_image(dec.as_mut_slice(), pitch / 4, (size.0 / 4, size.1 / 4)))
 }
 
 fn dump_rgb565_to_image(
@@ -84,7 +100,7 @@ fn dump_rgb565_to_image(
     let length = pitch * size.1 / (bpp / 8);
 
     println!(
-        "size: {:?}, pitch: {}, bpp: {}, length: {}",
+        "rgb565, size: {:?}, pitch: {}, bpp: {}, length: {}",
         size, pitch, bpp, length
     );
     let mut copy = vec![0u16; length as _];

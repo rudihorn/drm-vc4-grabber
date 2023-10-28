@@ -192,6 +192,7 @@ fn main() {
         loop {
             if let Some(fb) = find_framebuffer(&card, verbose) {
                 dump_and_send_framebuffer(&mut socket, &card, fb, verbose).unwrap();
+                thread::sleep(Duration::from_millis(1000/20));
             } else {
                 thread::sleep(Duration::from_secs(1));
             }
