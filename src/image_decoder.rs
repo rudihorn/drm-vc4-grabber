@@ -60,6 +60,18 @@ impl YUV420Pixel {
     }
 }
 
+fn clamp(v : i32) -> u8 {
+    if v > 0xFF {
+        0xFF
+    } else {
+        if v < 0 {
+            0
+        } else {
+            v as u8
+        }
+    }
+}
+
 impl ToRgb for YUV420Pixel {
     fn rgb(&self) -> Rgb<u8> {
         let y = self.dat[0] as i32;
@@ -72,18 +84,6 @@ impl ToRgb for YUV420Pixel {
         let r = (298 * c + 409 * e + 128) >> 8;
         let g = (298 * c - 100 * d - 208 * e + 128) >> 8;
         let b = (298 * c + 516 * d + 128) >> 8;
-
-        let clamp = |v| {
-            if v > 0xFF {
-                0xFF
-            } else {
-                if v < 0 {
-                    0
-                } else {
-                    v as u8
-                }
-            }
-        };
 
         Rgb([clamp(r), clamp(g), clamp(b)])
     }
