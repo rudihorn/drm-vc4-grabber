@@ -1,0 +1,13 @@
+[Unit]
+Description=DRM VC4 capture
+After=kodi.service
+
+[Service]
+ExecStartPre=/bin/sleep 10
+ExecStart=/storage/drm-vc4-grabber-v0.1.1-aarch64-linux/drm-vc4-grabber
+TimeoutStopSec=2
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
