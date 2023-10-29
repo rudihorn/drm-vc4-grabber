@@ -22,8 +22,9 @@ directly uploads the images.
 1. Download the latest release archive.
 2. Extract the archive, e.g. `tar xvf drm-vc4-grabber-v0.1.0-aarch64-linux.tar.xz`
 3. Run the grabber in the background, e.g. `nohup ./drm-vc4-grabber-v0.1.0-aarch64-linux/drm-vc4-grabber`
+4. Optionally use systemd to automatically start it in the background. On LibreELEC, copy `systemd/drm-capture.service` to `~/.config/system.d/` and then run `systemctl enable drm-capture.service`.
 
-## Compiling
+##  Compiling
 
 1. Ensure rust is installed (with rustup and cargo).
 2. Install the target toolchain for raspberry pi: `rustup target install armv7-unknown-linux-gnueabihf`.
