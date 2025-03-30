@@ -70,7 +70,6 @@ fn decode_p030_image(
     offset: usize,
     verbose: bool,
 ) -> Result<RgbImage, SystemError> {
-
     // We assume the DRM BROADCOM SAND128 format
     if u64::from(drm_fourcc::DrmModifier::Broadcom_sand128) != modifier & !(0xFFFF << 8) {
         panic!("Unsupported P030 modifier value");
@@ -129,7 +128,6 @@ fn decode_nv12_image(
     offset: usize,
     verbose: bool,
 ) -> Result<RgbImage, SystemError> {
-
     // We assume the DRM BROADCOM SAND128 format
     if u64::from(drm_fourcc::DrmModifier::Broadcom_sand128) != modifier & !(0xFFFF << 8) {
         panic!("Unsupported NV12 modifier value");
@@ -153,7 +151,7 @@ fn decode_nv12_image(
     let mut yplane = vec![0u32; length as _];
     copy_buffer(card, handle, &mut yplane, verbose)?;
 
-    let decim : usize = 4;
+    let decim: usize = 4;
     let mut img = RgbImage::new((size.0 / decim) as _, (size.1 / decim) as _);
     for y in 0..size.1 / decim {
         let ty = y * decim;
@@ -178,7 +176,6 @@ fn decode_nv12_image(
 
     Ok(img)
 }
-
 
 fn dump_linear_to_image(
     card: &Card,
@@ -271,14 +268,14 @@ fn dump_yuv420_to_image(
     // The length of the entire buffer is the length of the last buffer plus its
     // offset (assuming they are in order). The U and V buffers are grouped into
     // 2x2 tiles, hence the length is divided by 4.
-    let length = offsets[2] + size.1 * pitches[2] * pitches[2] / pitches[0];
+    let length = offsets[2] + size.1 * pitches[2] / (pitches[0] / pitches[2]);
     //println!("  -> Mounting @{} +{}", offset, length);
 
     let mut copy = vec![0; length as _];
     copy_buffer(card, handles[0], &mut copy, verbose)?;
 
     let buffer_range = |i| {
-        offsets[i] as usize..(offsets[i] + size.1 * pitches[i] * pitches[i] / pitches[0]) as usize
+        offsets[i] as usize..(offsets[i] + size.1 * pitches[i] / (pitches[0] / pitches[i])) as usize
     };
 
     let mappings = [
@@ -378,7 +375,7 @@ pub fn dump_framebuffer_to_image(
             fbinfo2.handles[0],
             fbinfo2.modifier[0],
             fbinfo2.offsets[1] as _,
-            verbose
+            verbose,
         ),
 
         _ => panic!(
