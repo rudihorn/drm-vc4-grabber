@@ -126,6 +126,28 @@ pub fn rgb565_to_rgb888(mapping: &[u16], pitch: u32, size: (u32, u32)) -> RgbIma
     img
 }
 
+pub fn decode_xrgb2101010_image(mapping: &[u32], pitch: u32, size: (u32, u32)) -> RgbImage {
+    let mut img = RgbImage::new(size.0, size.1);
+
+    let bytepitch = pitch / 4;
+
+    for y in 0..size.1 {
+        for x in 0..size.0 {
+            let offset = y * bytepitch + x;
+            let v = mapping[offset as usize];
+            // XRGB2101010: [31:30]=X, [29:20]=R, [19:10]=G, [9:0]=B
+            // Shift right by 2 to convert 10-bit to 8-bit
+            let r = ((v >> 20) & 0x3FF) >> 2;
+            let g = ((v >> 10) & 0x3FF) >> 2;
+            let b = (v & 0x3FF) >> 2;
+
+            unsafe { img.unsafe_put_pixel(x, y, Rgb([r as u8, g as u8, b as u8])) };
+        }
+    }
+
+    img
+}
+
 pub fn decode_image(mapping: &[u32], pitch: u32, size: (u32, u32)) -> RgbImage {
     let mut img = RgbImage::new(size.0, size.1);
 
