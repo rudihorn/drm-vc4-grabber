@@ -25,7 +25,6 @@ jobs:
           os: ubuntu-20.04
           rust: stable
           target: aarch64-unknown-linux-musl
-          cross: true
 
     steps:
       - name: Checkout sources
@@ -41,39 +40,19 @@ jobs:
           target: ${{ matrix.target }}
           override: true
 
-      - name: Run cargo test
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: ${{ matrix.cross }}
-          command: test
-          args: --release --locked --target ${{ matrix.target }}
+      - name: Install cross
+        run: cargo install cross
 
       - name: Build release binary
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: ${{ matrix.cross }}
-          command: build
-          args: --release --locked --target ${{ matrix.target }}
-
-      # - name: Strip release binary (arm)
-      #   if: matrix.build == 'aarch64-linux'
-      #   run: |
-      #     docker run --rm -v \
-      #       "$PWD/target:/target:Z" \
-      #       rustembedded/cross:${{ matrix.target }} \
-      #       aarch64-linux-gnu-strip \
-      #       /target/${{ matrix.target }}/release/$BIN_NAME
-
-      - name: Build archive
-        shell: bash
-        run: |
-          mkdir dist
-          cp "target/${{ matrix.target }}/release/$BIN_NAME" "dist/"
+        env:
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.build }}
+        run: ./scripts/build.sh
 
       - uses: actions/upload-artifact@v4
         with:
           name: bins-${{ matrix.build }}
-          path: dist
+          path: bins-${{ matrix.build }}
 
   publish:
     name: Publish
@@ -88,37 +67,17 @@ jobs:
 
       - uses: actions/download-artifact@v4
 
-      - run: ls -al bins-*
-
       - name: Calculate tag name
         run: |
           name=dev
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
             name=${GITHUB_REF:10}
           fi
-          echo ::set-output name=val::$name
           echo TAG=$name >> $GITHUB_ENV
         id: tagname
 
       - name: Build archive
-        shell: bash
-        run: |
-          set -ex
-
-          rm -rf tmp
-          mkdir tmp
-          mkdir dist
-
-          for dir in bins-* ; do
-              platform=${dir#"bins-"}
-              pkgname=$PROJECT_NAME-$TAG-$platform
-              mkdir tmp/$pkgname
-              # cp LICENSE README.md tmp/$pkgname
-              mv bins-$platform/$BIN_NAME$exe tmp/$pkgname
-              chmod +x tmp/$pkgname/$BIN_NAME$exe
-
-              tar cJf dist/$pkgname.tar.xz -C tmp $pkgname
-          done
+        run: ./scripts/package.sh
 
       - name: Upload binaries to release
         uses: svenstaro/upload-release-action@v2
@@ -126,10 +85,5 @@ jobs:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           file: dist/*
           file_glob: true
-          tag: ${{ steps.tagname.outputs.val }}
+          tag: ${{ env.TAG }}
           overwrite: true
-
-      - name: Extract version
-        id: extract-version
-        run: |
-          printf "::set-output name=%s::%s\n" tag-name "${GITHUB_REF#refs/tags/}"
