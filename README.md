@@ -27,11 +27,16 @@ directly uploads the images.
 ##  Compiling
 
 1. Ensure rust is installed (with rustup and cargo).
-2. Install the target toolchain for raspberry pi: `rustup target install aarch64-unknown-linux-gnu`.
-3. Ensure the linker for this toolchain is installed, e.g. `sudo apt install gcc-aarch64-linux-gnu`
-4. Set the linker in your env var: `export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=/usr/bin/aarch64-linux-gnu-gcc`
-5. Compile: `cargo build --release --target aarch64-unknown-linux-gnu`
-6. The built file will be at `target/aarch64-unknown-linux-gnu/release/drm-v4-capture`
+2. Install [cross](https://github.com/cross-rs/cross): `cargo install cross`
+3. Ensure Docker is running.
+4. Compile: `./scripts/build.sh`
+5. The built binary will be at `bins-aarch64-linux/drm-vc4-grabber`
+
+To package it into a release archive:
+
+```
+TAG=v0.1.0 ./scripts/package.sh
+```
 
 ## Example
 
