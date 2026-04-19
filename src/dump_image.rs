@@ -12,7 +12,7 @@ use crate::{
     ffi::{self, gem_close},
     image_decoder::{
         decode_image, decode_image_multichannel, decode_small_image_multichannel,
-        decode_tiled_small_image, rgb565_to_rgb888, ToRgb, YUV420Pixel,
+        decode_tiled_small_image, decode_xrgb2101010_image, rgb565_to_rgb888, ToRgb, YUV420Pixel,
     },
     Card,
 };
@@ -330,6 +330,84 @@ fn dump_yuv420_to_image(
     }
 }
 
+fn xr30_pixel_to_xrgb8888(v: u32) -> u32 {
+    // XRGB2101010: [31:30]=X, [29:20]=R, [19:10]=G, [9:0]=B
+    // Convert each 10-bit channel to 8-bit by shifting right 2
+    let r = ((v >> 20) & 0x3FF) >> 2;
+    let g = ((v >> 10) & 0x3FF) >> 2;
+    let b = (v & 0x3FF) >> 2;
+    (r << 16) | (g << 8) | b
+}
+
+fn dump_xrgb2101010_linear_to_image(
+    card: &Card,
+    pitch: u32,
+    size: (u32, u32),
+    handle: u32,
+    verbose: bool,
+) -> Result<RgbImage, SystemError> {
+    let length = pitch * size.1 / 4;
+
+    if verbose {
+        println!(
+            "xrgb2101010 linear, size: {:?}, pitch: {}, length: {}",
+            size, pitch, length
+        );
+    }
+
+    let mut copy = vec![0u32; length as _];
+    copy_buffer(card, handle, &mut copy, verbose)?;
+
+    let mut dec = vec![0u32; (length / (4 * 4)) as _];
+    decimate_image_4(
+        (size.0 as _, size.1 as _),
+        copy.as_slice(),
+        dec.as_mut_slice(),
+    );
+
+    Ok(decode_xrgb2101010_image(
+        dec.as_mut_slice(),
+        pitch / 4,
+        (size.0 / 4, size.1 / 4),
+    ))
+}
+
+fn dump_xrgb2101010_tiled_to_image(
+    card: &Card,
+    size: (u32, u32),
+    handle: u32,
+    verbose: bool,
+) -> Result<RgbImage, SystemError> {
+    let tilesize = 32;
+    let tile_count = |n| (n + tilesize - 1) / tilesize;
+    let tiles = (tile_count(size.0), tile_count(size.1));
+    let total_tiles = tiles.0 * tiles.1;
+
+    let length = total_tiles * tilesize * tilesize * 4;
+
+    if verbose {
+        println!(
+            "xrgb2101010 tiled, size: {:?}, tiles: {:?}, length: {}",
+            size, tiles, length
+        );
+    }
+
+    let mut copy = vec![0u32; (length / 4) as _];
+    copy_buffer(card, handle, &mut copy, verbose)?;
+
+    // Convert XR30 pixels to XRGB8888 so the existing tiled decoder can process them
+    for v in copy.iter_mut() {
+        *v = xr30_pixel_to_xrgb8888(*v);
+    }
+
+    Ok(decode_tiled_small_image(
+        copy.as_mut_slice(),
+        tilesize,
+        tiles,
+        size,
+    ))
+}
+
 pub fn dump_framebuffer_to_image(
     card: &Card,
     fb: Handle,
@@ -400,6 +478,19 @@ pub fn dump_framebuffer_to_image(
                     fbinfo2.pitches[0],
                     size,
                     32,
+                    fbinfo2.handles[0],
+                    verbose,
+                ),
+                _ => panic!("Unsupported framebuffer modifier: {:?}", modifier),
+            },
+            DrmFourcc::Xrgb2101010 => match modifier {
+                DrmModifier::Broadcom_vc4_t_tiled => {
+                    dump_xrgb2101010_tiled_to_image(card, size, fbinfo2.handles[0], verbose)
+                }
+                DrmModifier::Linear => dump_xrgb2101010_linear_to_image(
+                    card,
+                    fbinfo2.pitches[0],
+                    size,
                     fbinfo2.handles[0],
                     verbose,
                 ),
