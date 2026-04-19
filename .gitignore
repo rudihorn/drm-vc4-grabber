@@ -1,5 +1,7 @@
 /target/
 /dist/
+/debug.txt
+/MAINTAINER_NOTES.md
 *.deb
 *.tar.gz
 *.zip
