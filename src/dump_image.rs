@@ -44,7 +44,14 @@ impl MappedBuffer {
             Ok(m) => m,
             Err(e) => {
                 libc::close(fd);
-                return Err(SystemError::Unknown { errno: e });
+                // nix 0.20 returns `nix::Error` (not `Errno` directly) from
+                // mmap. Extract the errno where possible, else fall back to
+                // EIO as a generic I/O failure.
+                let errno = match e {
+                    nix::Error::Sys(errno) => errno,
+                    _ => nix::errno::Errno::EIO,
+                };
+                return Err(SystemError::Unknown { errno });
             }
         };
         // Hint the kernel about our access pattern.
@@ -101,7 +108,7 @@ fn decode_p030_image(
     // We assume the DRM BROADCOM SAND128 format
     if u64::from(drm_fourcc::DrmModifier::Broadcom_sand128) != modifier & !(0xFFFF << 8) {
         return Err(SystemError::Unknown {
-            errno: nix::errno::Errno::ENOTSUP,
+            errno: nix::errno::Errno::EOPNOTSUPP,
         });
     }
 
@@ -160,7 +167,7 @@ fn decode_nv12_image(
     // We assume the DRM BROADCOM SAND128 format
     if u64::from(drm_fourcc::DrmModifier::Broadcom_sand128) != modifier & !(0xFFFF << 8) {
         return Err(SystemError::Unknown {
-            errno: nix::errno::Errno::ENOTSUP,
+            errno: nix::errno::Errno::EOPNOTSUPP,
         });
     }
 
@@ -439,7 +446,7 @@ fn dump_xrgb2101010_tiled_to_image(
 fn unsupported(kind: &str, detail: &dyn std::fmt::Debug) -> SystemError {
     eprintln!("Unsupported framebuffer {}: {:?}", kind, detail);
     SystemError::Unknown {
-        errno: nix::errno::Errno::ENOTSUP,
+        errno: nix::errno::Errno::EOPNOTSUPP,
     }
 }
 

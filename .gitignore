@@ -1,9 +1,9 @@
 /target/
+/dist/
 *.deb
 *.tar.gz
 *.zip
 *.log
-*.txt
 .kiro/
 .vscode/
 .idea/
@@ -11,11 +11,6 @@
 *.swo
 Cargo.lock
 .cargo/
-apply_*.sh
-commit_*.sh
-restore_*.sh
-setup_*.sh
-cleanup_*.sh
 .DS_Store
 .DS_Store?
 ._*
