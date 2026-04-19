@@ -20,7 +20,6 @@ use std::{thread, time::Duration};
 use std::io::Result as StdResult;
 
 pub mod ffi;
-pub mod framebuffer;
 pub mod hyperion;
 #[allow(mismatched_lifetime_syntaxes)]
 pub mod hyperion_reply_generated;
@@ -28,11 +27,7 @@ pub mod hyperion_reply_generated;
 pub mod hyperion_request_generated;
 pub mod image_decoder;
 pub mod dump_image;
-pub mod diagnostics;
-pub mod system_monitor;
-pub mod connection_manager;
 
-pub use hyperion_request_generated::hyperionnet::{Clear, Color, Command, Image, Register};
 use hyperion::{read_reply, register_direct, send_image};
 
 pub struct Card(File);
@@ -53,11 +48,11 @@ impl Device for Card {}
 impl ControlDevice for Card {}
 
 impl Card {
-    pub fn open(path: &str) -> Self {
+    pub fn open(path: &str) -> std::io::Result<Self> {
         let mut options = OpenOptions::new();
         options.read(true);
         options.write(false);
-        Card(options.open(path).unwrap())
+        Ok(Card(options.open(path)?))
     }
 }
 
@@ -65,36 +60,62 @@ fn save_screenshot(img: &RgbImage) -> Result<(), ImageError> {
     img.save("screenshot.png")
 }
 
+/// Send an already-captured image. Assumes the socket is already registered.
+/// Registration happens once per connection in `main`, not per-frame — doing it
+/// per-frame would double the round-trips and spam Hyperion's priority registry.
 fn send_dumped_image(socket: &mut TcpStream, img: &RgbImage, verbose: bool) -> StdResult<()> {
-    register_direct(socket)?;
-    read_reply(socket, verbose)?;
-
     send_image(socket, img, verbose)?;
-
     Ok(())
 }
 
+/// Capture the framebuffer and forward it to Hyperion. Decode failures are
+/// surfaced as errors so the capture loop's backoff logic kicks in instead of
+/// silently dropping frames (which eventually triggers Hyperion's rainbow).
 fn dump_and_send_framebuffer(
     socket: &mut TcpStream,
     card: &Card,
     fb: Handle,
     verbose: bool,
 ) -> StdResult<()> {
-    let img = dump_framebuffer_to_image(card, fb, verbose);
-    if let Ok(img) = img {
-        send_dumped_image(socket, &img, verbose)?;
-    } else if verbose {
-        eprintln!("Error dumping framebuffer to image.");
+    match dump_framebuffer_to_image(card, fb, verbose) {
+        Ok(img) => send_dumped_image(socket, &img, verbose),
+        Err(e) => {
+            if verbose {
+                eprintln!("Error dumping framebuffer to image: {:?}", e);
+            }
+            // Translate DRM error into io::Error so the main loop's match can
+            // classify it (same as any other capture failure).
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("framebuffer decode failed: {:?}", e),
+            ))
+        }
     }
-
-    Ok(())
 }
 
 fn find_framebuffer(card: &Card, verbose: bool) -> Option<Handle> {
-    let resource_handles = card.resource_handles().unwrap();
+    // Resource handles can fail transiently during mode-set events — return None
+    // rather than panicking so the main loop can retry.
+    let resource_handles = match card.resource_handles() {
+        Ok(h) => h,
+        Err(e) => {
+            if verbose {
+                eprintln!("resource_handles failed: {}", e);
+            }
+            return None;
+        }
+    };
 
     for crtc in resource_handles.crtcs() {
-        let info = card.get_crtc(*crtc).unwrap();
+        let info = match card.get_crtc(*crtc) {
+            Ok(i) => i,
+            Err(e) => {
+                if verbose {
+                    eprintln!("get_crtc({:?}) failed: {}", crtc, e);
+                }
+                continue;
+            }
+        };
 
         if verbose {
             println!("CRTC Info: {:?}", info);
@@ -107,19 +128,37 @@ fn find_framebuffer(card: &Card, verbose: bool) -> Option<Handle> {
         }
     }
 
-    let plane_handles = card.plane_handles().unwrap();
+    let plane_handles = match card.plane_handles() {
+        Ok(h) => h,
+        Err(e) => {
+            if verbose {
+                eprintln!("plane_handles failed: {}", e);
+            }
+            return None;
+        }
+    };
 
     for plane in plane_handles.planes() {
-        let info = card.get_plane(*plane).unwrap();
+        let info = match card.get_plane(*plane) {
+            Ok(i) => i,
+            Err(e) => {
+                if verbose {
+                    eprintln!("get_plane({:?}) failed: {}", plane, e);
+                }
+                continue;
+            }
+        };
 
         if verbose {
             println!("Plane Info: {:?}", info);
         }
 
+        // A plane may have a CRTC attached but no framebuffer during transitions
+        // (HDR metadata changes, scene switches). Skip silently instead of panicking.
         if info.crtc().is_some() {
-            let fb = info.framebuffer().unwrap();
-
-            return Some(fb);
+            if let Some(fb) = info.framebuffer() {
+                return Some(fb);
+            }
         }
     }
 
@@ -128,10 +167,15 @@ fn find_framebuffer(card: &Card, verbose: bool) -> Option<Handle> {
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
+
+/// Target capture rate. 30 FPS is the practical upper bound for Hyperion — it
+/// smooths LEDs internally and higher rates just burn CPU on the Pi.
+const TARGET_FRAME_PERIOD: Duration = Duration::from_millis(33);
 
 fn main() {
     let matches = App::new("DRM VC4 Screen Grabber for Hyperion")
-        .version("0.1.2")
+        .version("0.1.3")
         .author("Rudi Horn <dyn-git@rudi-horn.de>")
         .about("Captures a screenshot and sends it to the Hyperion or HyperHDR server.")
         .arg(
@@ -167,20 +211,31 @@ fn main() {
     let verbose = matches.is_present("verbose");
     let screenshot = matches.is_present("screenshot");
     let device_path = matches.value_of("device").unwrap();
-    let card = Card::open(device_path);
-    let authenticated = card.authenticated().unwrap();
+    let card = match Card::open(device_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to open DRM device '{}': {}", device_path, e);
+            std::process::exit(1);
+        }
+    };
+    let authenticated = card.authenticated().unwrap_or(false);
 
     if verbose {
-        let driver = card.get_driver().unwrap();
-        println!("Driver (auth={}): {:?}", authenticated, driver);
+        if let Ok(driver) = card.get_driver() {
+            println!("Driver (auth={}): {:?}", authenticated, driver);
+        }
     }
 
+    // Enable universal planes so we can see overlay/cursor planes too. Without
+    // this we only see the primary plane which is often not where video lands.
     unsafe {
         let set_cap = drm_set_client_cap {
             capability: drm_ffi::DRM_CLIENT_CAP_UNIVERSAL_PLANES as u64,
             value: 1,
         };
-        drm_ffi::ioctl::set_cap(card.as_raw_fd(), &set_cap).unwrap();
+        if let Err(e) = drm_ffi::ioctl::set_cap(card.as_raw_fd(), &set_cap) {
+            eprintln!("Warning: could not enable UNIVERSAL_PLANES: {}", e);
+        }
     }
 
     let address = matches.value_of("address").unwrap();
@@ -193,6 +248,9 @@ fn main() {
             println!("No framebuffer found!");
         }
     } else {
+        // Establish the Hyperion/HyperHDR connection and register just once.
+        // Re-registering on every frame (as the original code did) doubles
+        // round-trips per frame and spams the server's priority registry.
         let mut socket = TcpStream::connect(address).unwrap();
         register_direct(&mut socket).unwrap();
         read_reply(&mut socket, verbose).unwrap();
@@ -201,30 +259,43 @@ fn main() {
             println!("Connected to Hyperion, starting capture loop");
         }
 
-        // Track consecutive errors for connection reliability
         let consecutive_errors = Arc::new(AtomicU32::new(0));
-        // Track consecutive "no framebuffer" occurrences
         let mut no_fb_count: u32 = 0;
 
         loop {
+            let frame_start = Instant::now();
+
             if let Some(fb) = find_framebuffer(&card, verbose) {
-                no_fb_count = 0; // Reset counter on successful find
+                no_fb_count = 0;
                 match dump_and_send_framebuffer(&mut socket, &card, fb, verbose) {
                     Ok(_) => {
                         consecutive_errors.store(0, Ordering::Relaxed);
-                        thread::sleep(Duration::from_millis(33)); // ~30 FPS
+                        // Delta-time pacing: sleep only the remainder of the
+                        // target period, so slow captures don't compound into
+                        // an even lower effective FPS.
+                        let elapsed = frame_start.elapsed();
+                        if elapsed < TARGET_FRAME_PERIOD {
+                            thread::sleep(TARGET_FRAME_PERIOD - elapsed);
+                        }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
-                        eprintln!("HyperHDR disconnected. Reconnecting...");
+                        eprintln!("Hyperion disconnected. Reconnecting...");
                         consecutive_errors.store(0, Ordering::Relaxed);
                         thread::sleep(Duration::from_secs(2));
 
                         match TcpStream::connect(address) {
                             Ok(new_socket) => {
                                 socket = new_socket;
-                                let _ = register_direct(&mut socket);
-                                let _ = read_reply(&mut socket, verbose);
-                                eprintln!("Reconnected to HyperHDR");
+                                // Re-register on the fresh connection.
+                                if let Err(e) = register_direct(&mut socket) {
+                                    eprintln!("Re-register failed: {}", e);
+                                    continue;
+                                }
+                                if let Err(e) = read_reply(&mut socket, verbose) {
+                                    eprintln!("Re-register read_reply failed: {}", e);
+                                    continue;
+                                }
+                                eprintln!("Reconnected to Hyperion");
                             }
                             Err(e) => {
                                 eprintln!("Reconnection failed: {}. Will retry...", e);
@@ -238,14 +309,12 @@ fn main() {
                             eprintln!("Capture error #{}: {}", errors, e);
                         }
 
-                        // Back off on errors
-                        let backoff = match errors {
+                        let backoff_ms = match errors {
                             1..=2 => 100,
                             3..=5 => 500,
                             _ => 2000,
                         };
-
-                        thread::sleep(Duration::from_millis(backoff));
+                        thread::sleep(Duration::from_millis(backoff_ms));
                     }
                 }
             } else {
@@ -255,8 +324,9 @@ fn main() {
                     eprintln!("No framebuffer found (count: {}), waiting...", no_fb_count);
                 }
 
-                // Don't send any color - just wait silently
-                // The LEDs will maintain their last state or timeout naturally
+                // No framebuffer usually means the compositor is transitioning.
+                // Sleeping silently preserves the last LED state rather than
+                // forcing a colour that would jank the wall.
                 thread::sleep(Duration::from_secs(1));
             }
         }

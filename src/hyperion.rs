@@ -9,7 +9,7 @@ use std::io::Result as StdResult;
 use crate::hyperion_reply_generated::hyperionnet as reply;
 use crate::hyperion_request_generated::hyperionnet as request;
 
-pub fn read_reply(socket: &mut TcpStream, verbose : bool) -> StdResult<()> {
+pub fn read_reply(socket: &mut TcpStream, verbose: bool) -> StdResult<()> {
     let mut size = [0u8; 4];
     socket.read_exact(&mut size)?;
 
@@ -17,10 +17,19 @@ pub fn read_reply(socket: &mut TcpStream, verbose : bool) -> StdResult<()> {
     let mut msg = vec![0; v];
     socket.read_exact(&mut msg)?;
 
-    let request = reply::root_as_reply(&msg).unwrap();
-
-    if verbose {
-        println!("Response {:?}", request);
+    // Parsing the reply is best-effort — if Hyperion sends malformed bytes we'd
+    // rather log and carry on than crash the whole grabber.
+    match reply::root_as_reply(&msg) {
+        Ok(request) => {
+            if verbose {
+                println!("Response {:?}", request);
+            }
+        }
+        Err(e) => {
+            if verbose {
+                eprintln!("Malformed reply from Hyperion: {}", e);
+            }
+        }
     }
 
     Ok(())
@@ -55,7 +64,7 @@ pub fn register_direct(socket: &mut TcpStream) -> StdResult<()> {
     Ok(())
 }
 
-pub fn send_image(socket: &mut TcpStream, image: & RgbImage, verbose: bool) -> StdResult<()> {
+pub fn send_image(socket: &mut TcpStream, image: &RgbImage, verbose: bool) -> StdResult<()> {
     let mut builder = FlatBufferBuilder::new();
 
     let raw_bytes = image.as_bytes();
@@ -93,71 +102,6 @@ pub fn send_image(socket: &mut TcpStream, image: & RgbImage, verbose: bool) -> S
         &request::RequestArgs {
             command_type: request::Command::Image,
             command: Some(image.as_union_value()),
-        },
-    );
-
-    request::finish_request_buffer(&mut builder, offset);
-
-    let dat = builder.finished_data();
-    socket.write_u32::<BigEndian>(dat.len() as _)?;
-    socket.write_all(dat)?;
-    socket.flush()?;
-
-    read_reply(socket, verbose)?;
-
-    Ok(())
-}
-
-pub fn send_color_red(socket: &mut TcpStream, verbose: bool) -> StdResult<()> {
-    println!("Setting color");
-    let mut builder = flatbuffers::FlatBufferBuilder::new();
-
-    let color = request::Color::create(
-        &mut builder,
-        &request::ColorArgs {
-            data: 0x00100000,
-            duration: 5000,
-        },
-    );
-
-    let offset = request::Request::create(
-        &mut builder,
-        &request::RequestArgs {
-            command_type: request::Command::Color,
-            command: Some(color.as_union_value()),
-        },
-    );
-
-    request::finish_request_buffer(&mut builder, offset);
-
-    let dat = builder.finished_data();
-    socket.write_u32::<BigEndian>(dat.len() as _)?;
-    socket.write_all(dat)?;
-    socket.flush()?;
-
-    read_reply(socket, verbose)?;
-
-    Ok(())
-}
-pub fn send_color_warm(socket: &mut TcpStream, verbose: bool) -> StdResult<()> {
-    println!("Setting warm color");
-    let mut builder = flatbuffers::FlatBufferBuilder::new();
-
-    // Warm dark red color (RGB: 87, 27, 27)
-    // Format is 0x00RRGGBB
-    let color = request::Color::create(
-        &mut builder,
-        &request::ColorArgs {
-            data: 0x00571B1B as i32,  // 87, 27, 27 in hex
-            duration: 5000,
-        },
-    );
-
-    let offset = request::Request::create(
-        &mut builder,
-        &request::RequestArgs {
-            command_type: request::Command::Color,
-            command: Some(color.as_union_value()),
         },
     );
 

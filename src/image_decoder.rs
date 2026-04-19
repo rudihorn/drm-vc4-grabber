@@ -34,22 +34,6 @@ pub trait ToRgb {
     fn rgb(&self) -> Rgb<u8>;
 }
 
-pub struct RgbPixel {
-    dat: [u8; 3],
-}
-
-impl RgbPixel {
-    pub fn new(r: u8, g: u8, b: u8) -> RgbPixel {
-        RgbPixel { dat: [r, g, b] }
-    }
-}
-
-impl ToRgb for RgbPixel {
-    fn rgb(&self) -> Rgb<u8> {
-        Rgb(self.dat)
-    }
-}
-
 pub struct YUV420Pixel {
     dat: [u8; 3],
 }
@@ -113,58 +97,16 @@ impl ToRgb for Rgb565 {
 pub fn rgb565_to_rgb888(mapping: &[u16], pitch: u32, size: (u32, u32)) -> RgbImage {
     let mut img = RgbImage::new(size.0, size.1);
 
-    let bytepitch = pitch / 2;
+    let bytepitch = (pitch / 2) as usize;
 
     for y in 0..size.1 {
+        let row_off = (y as usize) * bytepitch;
         for x in 0..size.0 {
-            let offset = y * bytepitch + x;
-            let v = Rgb565::new(mapping[offset as usize]);
-
-            unsafe { img.unsafe_put_pixel(x, y, v.rgb()) };
+            // SAFETY: mapping has at least pitch*height/2 elements by construction.
+            let raw = unsafe { *mapping.get_unchecked(row_off + x as usize) };
+            unsafe { img.unsafe_put_pixel(x, y, Rgb565::new(raw).rgb()) };
         }
     }
-    img
-}
-
-pub fn decode_xrgb2101010_image(mapping: &[u32], pitch: u32, size: (u32, u32)) -> RgbImage {
-    let mut img = RgbImage::new(size.0, size.1);
-
-    let bytepitch = pitch / 4;
-
-    for y in 0..size.1 {
-        for x in 0..size.0 {
-            let offset = y * bytepitch + x;
-            let v = mapping[offset as usize];
-            // XRGB2101010: [31:30]=X, [29:20]=R, [19:10]=G, [9:0]=B
-            // Shift right by 2 to convert 10-bit to 8-bit
-            let r = ((v >> 20) & 0x3FF) >> 2;
-            let g = ((v >> 10) & 0x3FF) >> 2;
-            let b = (v & 0x3FF) >> 2;
-
-            unsafe { img.unsafe_put_pixel(x, y, Rgb([r as u8, g as u8, b as u8])) };
-        }
-    }
-
-    img
-}
-
-pub fn decode_image(mapping: &[u32], pitch: u32, size: (u32, u32)) -> RgbImage {
-    let mut img = RgbImage::new(size.0, size.1);
-
-    let bytepitch = pitch / 4;
-
-    for y in 0..size.1 {
-        for x in 0..size.0 {
-            let offset = y * bytepitch + x;
-            let v = mapping[offset as usize];
-            let byte = |i| (v >> i * 8) as u8;
-
-            let px = Rgb([byte(2), (byte(1)), (byte(0))]);
-
-            unsafe { img.unsafe_put_pixel(x, y, px) };
-        }
-    }
-
     img
 }
 
@@ -285,74 +227,3 @@ pub fn decode_tiled_small_image(
     img.sub_image(0, 0, size.0 / 4, size.1 / 4).to_image()
 }
 
-pub fn to_image(mapping: &[u8], tilesize: u32, tiles: (u32, u32), size: (u32, u32)) -> RgbImage {
-    let mut img = RgbImage::new(tiles.0 * tilesize, tiles.1 * tilesize);
-    let mut i = 0;
-
-    let mut copy_px = |x, y| {
-        let color = Rgb([
-            mapping[(i + 2) as usize],
-            mapping[(i + 1) as usize],
-            mapping[(i + 0) as usize],
-        ]);
-        unsafe {
-            img.unsafe_put_pixel(x, y, color);
-        }
-        i = i + 4;
-    };
-    let mut copy_4_px = |x, y| {
-        copy_px(x, y);
-        copy_px(x + 1, y);
-        copy_px(x + 2, y);
-        copy_px(x + 3, y);
-    };
-
-    let mut copy_4x4_px = |x, y| {
-        copy_4_px(x, y);
-        copy_4_px(x, y + 1);
-        copy_4_px(x, y + 2);
-        copy_4_px(x, y + 3);
-    };
-
-    let mut copy_16x4_px = |x, y| {
-        copy_4x4_px(x, y);
-        copy_4x4_px(x + 4, y);
-        copy_4x4_px(x + 8, y);
-        copy_4x4_px(x + 12, y);
-    };
-
-    let mut copy_16x16_px = |x, y| {
-        copy_16x4_px(x, y);
-        copy_16x4_px(x, y + 4);
-        copy_16x4_px(x, y + 8);
-        copy_16x4_px(x, y + 12);
-    };
-
-    for ytile in 0..tiles.1 {
-        if ytile % 2 == 0 {
-            let mut copy_tile = |x, y| {
-                copy_16x16_px(x, y);
-                copy_16x16_px(x, y + 16);
-                copy_16x16_px(x + 16, y + 16);
-                copy_16x16_px(x + 16, y);
-            };
-
-            for xtile in 0..tiles.0 {
-                copy_tile(xtile * tilesize, ytile * tilesize);
-            }
-        } else {
-            let mut copy_tile = |x, y| {
-                copy_16x16_px(x + 16, y + 16);
-                copy_16x16_px(x + 16, y);
-                copy_16x16_px(x, y);
-                copy_16x16_px(x, y + 16);
-            };
-
-            for xtile in (0..tiles.0).rev() {
-                copy_tile(xtile * tilesize, ytile * tilesize);
-            }
-        }
-    }
-
-    img.sub_image(0, 0, size.0, size.1).to_image()
-}

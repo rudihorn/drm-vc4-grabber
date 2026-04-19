@@ -11,74 +11,84 @@ use nix::sys::mman;
 use crate::{
     ffi::{self, gem_close},
     image_decoder::{
-        decode_image, decode_image_multichannel, decode_small_image_multichannel,
-        decode_tiled_small_image, decode_xrgb2101010_image, rgb565_to_rgb888, ToRgb, YUV420Pixel,
+        decode_image_multichannel, decode_small_image_multichannel,
+        decode_tiled_small_image, rgb565_to_rgb888, ToRgb, YUV420Pixel,
     },
     Card,
 };
 
+/// RAII guard for an mmap'd framebuffer. Ensures the mapping is unmapped and
+/// the prime FD is closed even if the caller panics or returns early — the
+/// previous code leaked both on certain failure paths.
+struct MappedBuffer {
+    addr: *mut libc::c_void,
+    len: usize,
+    fd: libc::c_int,
+}
+
+impl MappedBuffer {
+    /// Map a DRM buffer object for read. `len` is in bytes.
+    unsafe fn new(card: &Card, handle: u32, len: usize) -> Result<Self, SystemError> {
+        let fd = ffi::prime_handle_to_fd(card.as_raw_fd(), handle)?;
+        let addr = match mman::mmap(
+            core::ptr::null_mut(),
+            len as _,
+            mman::ProtFlags::PROT_READ,
+            // Drop MAP_POPULATE — it forces synchronous page faults over the
+            // entire region, which stalls 4K captures. MADV_SEQUENTIAL below
+            // gives the kernel enough hint for good readahead.
+            mman::MapFlags::MAP_SHARED,
+            fd,
+            0,
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                libc::close(fd);
+                return Err(SystemError::Unknown { errno: e });
+            }
+        };
+        // Hint the kernel about our access pattern.
+        libc::madvise(addr, len as _, libc::MADV_SEQUENTIAL);
+        Ok(MappedBuffer { addr, len, fd })
+    }
+
+    /// Return the mapping as a read-only typed slice of `count` elements.
+    fn as_slice<T: Copy>(&self, count: usize) -> &[T] {
+        debug_assert!(count * size_of::<T>() <= self.len);
+        unsafe { std::slice::from_raw_parts(self.addr as *const T, count) }
+    }
+}
+
+impl Drop for MappedBuffer {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = mman::munmap(self.addr, self.len as _);
+            if close(self.fd) == -1 {
+                eprintln!(
+                    "Warning: failed to close prime fd {} (errno: {})",
+                    self.fd,
+                    std::io::Error::last_os_error()
+                );
+            }
+        }
+    }
+}
+
+/// Copy an entire DRM buffer into a caller-owned slice. Retained for formats
+/// that genuinely need a full copy (tiled/YUV/SAND128). For linear RGB, prefer
+/// the direct sampling helpers below which skip the intermediate buffer.
 fn copy_buffer<T: Sized + Copy>(
     card: &Card,
     handle: u32,
     to: &mut [T],
-    verbose: bool,
+    _verbose: bool,
 ) -> Result<(), SystemError> {
     let length = to.len() * size_of::<T>();
-
-    let hfd = ffi::prime_handle_to_fd(card.as_raw_fd(), handle)?;
-
-    let addr = core::ptr::null_mut();
-    let prot = mman::ProtFlags::PROT_READ;
-    // Add MADV_SEQUENTIAL flag for better memory access pattern
-    let flags = mman::MapFlags::MAP_SHARED | mman::MapFlags::MAP_POPULATE;
-    
-    unsafe {
-        let map = match mman::mmap(addr, length as _, prot, flags, hfd, 0) {
-            Ok(m) => m,
-            Err(_) => {
-                close(hfd);
-                return Err(SystemError::Unknown { errno: nix::errno::Errno::EINVAL });
-            }
-        };
-        
-        // Advise kernel about memory access pattern
-        libc::madvise(map, length as _, libc::MADV_SEQUENTIAL);
-        
-        // Copy with bounds checking
-        let mapping: &[T] = std::slice::from_raw_parts(map as *const _, to.len());
-        to.copy_from_slice(mapping);
-        
-        let _ = mman::munmap(map, length as _);
-        if close(hfd) == -1 {
-            // Don't panic, just continue
-        };
-    }
-
+    let map = unsafe { MappedBuffer::new(card, handle, length)? };
+    to.copy_from_slice(map.as_slice::<T>(to.len()));
     Ok(())
 }
 
-fn decimate_image_4(size: (usize, usize), image: &[u32], copy: &mut [u32]) {
-    let decim = (4, 4);
-    let newsize = (size.0 / decim.0, size.1 / decim.1);
-
-    for y in 0..newsize.1 {
-        let ty = decim.1 * y;
-        for x in 0..newsize.0 {
-            let tx = decim.0 * x;
-            copy[y * newsize.0 + x] = image[ty * size.0 + tx];
-        }
-    }
-}
-fn decimate_image_n(size: (usize, usize), image: &[u32], copy: &mut [u32], factor: usize) {
-    let newsize = (size.0 / factor, size.1 / factor);
-    for y in 0..newsize.1 {
-        let ty = factor * y;
-        for x in 0..newsize.0 {
-            let tx = factor * x;
-            copy[y * newsize.0 + x] = image[ty * size.0 + tx];
-        }
-    }
-}
 fn decode_p030_image(
     card: &Card,
     size: (usize, usize),
@@ -90,13 +100,14 @@ fn decode_p030_image(
 ) -> Result<RgbImage, SystemError> {
     // We assume the DRM BROADCOM SAND128 format
     if u64::from(drm_fourcc::DrmModifier::Broadcom_sand128) != modifier & !(0xFFFF << 8) {
-        panic!("Unsupported P030 modifier value");
+        return Err(SystemError::Unknown {
+            errno: nix::errno::Errno::ENOTSUP,
+        });
     }
 
     let stride = 128 / 4; // each column is 128 bytes wide, we use 4 bytes per word
     let colpx = 96;
 
-    let ypitch = pitches as usize / (32 / 8);
     let ylines = ((modifier >> 8) & 0xFFFFFFFF) as usize;
     let length = ylines * (size.0 / colpx) * stride;
     let crcboffset = offset / 4; // offset of the CrCb information in each column
@@ -104,7 +115,7 @@ fn decode_p030_image(
     if verbose {
         println!(
             "P030, size: {:?}, lines: {}, pitches: {}, length: {}",
-            size, ylines, ypitch, length
+            size, ylines, pitches, length
         );
     }
 
@@ -148,13 +159,14 @@ fn decode_nv12_image(
 ) -> Result<RgbImage, SystemError> {
     // We assume the DRM BROADCOM SAND128 format
     if u64::from(drm_fourcc::DrmModifier::Broadcom_sand128) != modifier & !(0xFFFF << 8) {
-        panic!("Unsupported NV12 modifier value");
+        return Err(SystemError::Unknown {
+            errno: nix::errno::Errno::ENOTSUP,
+        });
     }
 
     let stride = 128 / 4; // each column is 128 bytes wide, we use 4 bytes per word
     let colpx = 128; // 1 byte per pixel
 
-    let ypitch = pitches as usize / (32 / 8);
     let ylines = ((modifier >> 8) & 0xFFFFFFFF) as usize;
     let length = ylines * (size.0 / colpx) * stride;
     let crcboffset = offset / 4; // offset of the CrCb information in each column
@@ -162,7 +174,7 @@ fn decode_nv12_image(
     if verbose {
         println!(
             "NV12, size: {:?}, lines: {}, pitches: {}, length: {}",
-            size, ylines, ypitch, length
+            size, ylines, pitches, length
         );
     }
 
@@ -203,12 +215,11 @@ fn dump_linear_to_image(
     handle: u32,
     verbose: bool,
 ) -> Result<RgbImage, SystemError> {
-    let size = (size.0, size.1);
-    let length = pitch * size.1 / (bpp / 8);
-    
-    // Use more aggressive decimation for 4K
-    let decim_factor = if size.0 >= 3840 || size.1 >= 2160 { 8 } else { 4 };
-    
+    // Decimate more aggressively for 4K — Hyperion averages per-LED anyway, so
+    // a 480x270 sample gives the same LED colours as a full 3840x2160.
+    let decim_factor: u32 = if size.0 >= 3840 || size.1 >= 2160 { 8 } else { 4 };
+    let length = (pitch * size.1 / (bpp / 8)) as usize;
+
     if verbose {
         println!(
             "linear, size: {:?}, pitch: {}, bpp: {}, length: {}, decimation: {}",
@@ -216,31 +227,33 @@ fn dump_linear_to_image(
         );
     }
 
-    let mut copy = vec![0u32; length as _];
-    copy_buffer(card, handle, &mut copy, verbose)?;
+    // Map the framebuffer read-only and sample directly — no 33MB intermediate
+    // copy for 4K frames. The map is walked once, row by row, picking every
+    // `decim_factor` pixel. This slashes per-frame memory traffic by ~decim²×.
+    let map = unsafe { MappedBuffer::new(card, handle, length * size_of::<u32>())? };
+    let src: &[u32] = map.as_slice::<u32>(length);
 
-    let mut dec = vec![0u32; (length / (decim_factor * decim_factor)) as _];
-    
-    if decim_factor == 4 {
-        decimate_image_4(
-            (size.0 as _, size.1 as _),
-            copy.as_slice(),
-            dec.as_mut_slice(),
-        );
-    } else {
-        decimate_image_n(
-            (size.0 as _, size.1 as _),
-            copy.as_slice(),
-            dec.as_mut_slice(),
-            decim_factor as usize,
-        );
+    let bytepitch = (pitch / 4) as usize; // in u32 words
+    let out_w = (size.0 / decim_factor) as u32;
+    let out_h = (size.1 / decim_factor) as u32;
+    let mut img = RgbImage::new(out_w, out_h);
+    let step = decim_factor as usize;
+
+    for y in 0..out_h {
+        let src_y = (y as usize) * step;
+        let row_off = src_y * bytepitch;
+        for x in 0..out_w {
+            let src_x = (x as usize) * step;
+            // SAFETY: bounds checked by construction — src_y < size.1, src_x < size.0,
+            // and row_off + src_x < length. Using get_unchecked avoids 2M bounds
+            // checks per frame at 1080p.
+            let v = unsafe { *src.get_unchecked(row_off + src_x) };
+            let px = image::Rgb([(v >> 16) as u8, (v >> 8) as u8, v as u8]);
+            unsafe { img.unsafe_put_pixel(x, y, px) };
+        }
     }
 
-    Ok(decode_image(
-        dec.as_mut_slice(),
-        pitch / decim_factor,
-        (size.0 / decim_factor, size.1 / decim_factor),
-    ))
+    Ok(img)
 }
 
 fn dump_rgb565_to_image(
@@ -251,8 +264,6 @@ fn dump_rgb565_to_image(
     handle: u32,
     verbose: bool,
 ) -> Result<RgbImage, SystemError> {
-    // let size = (size.0, size.1 / 64);
-
     let length = pitch * size.1 / (bpp / 8);
 
     if verbose {
@@ -346,30 +357,43 @@ fn dump_xrgb2101010_linear_to_image(
     handle: u32,
     verbose: bool,
 ) -> Result<RgbImage, SystemError> {
-    let length = pitch * size.1 / 4;
+    // HDR content is almost always 4K these days; decimate 8x to match
+    // dump_linear_to_image's behaviour and cut memory traffic accordingly.
+    let decim_factor: u32 = if size.0 >= 3840 || size.1 >= 2160 { 8 } else { 4 };
+    let length = (pitch * size.1 / 4) as usize;
 
     if verbose {
         println!(
-            "xrgb2101010 linear, size: {:?}, pitch: {}, length: {}",
-            size, pitch, length
+            "xrgb2101010 linear, size: {:?}, pitch: {}, length: {}, decimation: {}",
+            size, pitch, length, decim_factor
         );
     }
 
-    let mut copy = vec![0u32; length as _];
-    copy_buffer(card, handle, &mut copy, verbose)?;
+    // Direct-sample from mmap. Same 10-bit → 8-bit conversion as the image
+    // decoder, just inlined so we skip the intermediate Vec allocation.
+    let map = unsafe { MappedBuffer::new(card, handle, length * size_of::<u32>())? };
+    let src: &[u32] = map.as_slice::<u32>(length);
 
-    let mut dec = vec![0u32; (length / (4 * 4)) as _];
-    decimate_image_4(
-        (size.0 as _, size.1 as _),
-        copy.as_slice(),
-        dec.as_mut_slice(),
-    );
+    let bytepitch = (pitch / 4) as usize;
+    let out_w = (size.0 / decim_factor) as u32;
+    let out_h = (size.1 / decim_factor) as u32;
+    let mut img = RgbImage::new(out_w, out_h);
+    let step = decim_factor as usize;
 
-    Ok(decode_xrgb2101010_image(
-        dec.as_mut_slice(),
-        pitch / 4,
-        (size.0 / 4, size.1 / 4),
-    ))
+    for y in 0..out_h {
+        let row_off = (y as usize) * step * bytepitch;
+        for x in 0..out_w {
+            let src_x = (x as usize) * step;
+            let v = unsafe { *src.get_unchecked(row_off + src_x) };
+            // XRGB2101010 = [31:30]=X, [29:20]=R, [19:10]=G, [9:0]=B
+            let r = (((v >> 20) & 0x3FF) >> 2) as u8;
+            let g = (((v >> 10) & 0x3FF) >> 2) as u8;
+            let b = ((v & 0x3FF) >> 2) as u8;
+            unsafe { img.unsafe_put_pixel(x, y, image::Rgb([r, g, b])) };
+        }
+    }
+
+    Ok(img)
 }
 
 fn dump_xrgb2101010_tiled_to_image(
@@ -406,6 +430,17 @@ fn dump_xrgb2101010_tiled_to_image(
         tiles,
         size,
     ))
+}
+
+/// Helper: construct a generic "unsupported format" error without panicking.
+/// During HDR metadata transitions or plane switches the framebuffer can briefly
+/// present a format we don't handle. Returning an error lets the capture loop
+/// skip the frame and try again, instead of killing the process.
+fn unsupported(kind: &str, detail: &dyn std::fmt::Debug) -> SystemError {
+    eprintln!("Unsupported framebuffer {}: {:?}", kind, detail);
+    SystemError::Unknown {
+        errno: nix::errno::Errno::ENOTSUP,
+    }
 }
 
 pub fn dump_framebuffer_to_image(
@@ -451,8 +486,23 @@ pub fn dump_framebuffer_to_image(
             verbose,
         )
     } else {
-        let fourcc = drm_fourcc::DrmFourcc::try_from(fbinfo2.pixel_format).unwrap();
-        let modifier = drm_fourcc::DrmModifier::try_from(fbinfo2.modifier[0]).unwrap();
+        // Gracefully skip unknown formats rather than panicking. Kodi/HyperHDR can
+        // briefly present formats the drm-fourcc crate hasn't mapped yet during
+        // format transitions, and a panic here means systemd restart → rainbow.
+        let fourcc = match drm_fourcc::DrmFourcc::try_from(fbinfo2.pixel_format) {
+            Ok(f) => f,
+            Err(_) => {
+                cleanup_handles();
+                return Err(unsupported("pixel format (unknown fourcc)", &fbinfo2.pixel_format));
+            }
+        };
+        let modifier = match drm_fourcc::DrmModifier::try_from(fbinfo2.modifier[0]) {
+            Ok(m) => m,
+            Err(_) => {
+                cleanup_handles();
+                return Err(unsupported("modifier (unknown)", &fbinfo2.modifier[0]));
+            }
+        };
 
         match fourcc {
             DrmFourcc::Xrgb8888 => match modifier {
@@ -467,7 +517,7 @@ pub fn dump_framebuffer_to_image(
                     fbinfo2.handles[0],
                     verbose,
                 ),
-                _ => panic!("Unsupported framebuffer modifier: {:?}", modifier),
+                _ => Err(unsupported("Xrgb8888 modifier", &modifier)),
             },
             DrmFourcc::Argb8888 => match modifier {
                 DrmModifier::Broadcom_vc4_t_tiled => {
@@ -481,7 +531,7 @@ pub fn dump_framebuffer_to_image(
                     fbinfo2.handles[0],
                     verbose,
                 ),
-                _ => panic!("Unsupported framebuffer modifier: {:?}", modifier),
+                _ => Err(unsupported("Argb8888 modifier", &modifier)),
             },
             DrmFourcc::Xrgb2101010 => match modifier {
                 DrmModifier::Broadcom_vc4_t_tiled => {
@@ -494,7 +544,7 @@ pub fn dump_framebuffer_to_image(
                     fbinfo2.handles[0],
                     verbose,
                 ),
-                _ => panic!("Unsupported framebuffer modifier: {:?}", modifier),
+                _ => Err(unsupported("Xrgb2101010 modifier", &modifier)),
             },
             DrmFourcc::Yuv420 => dump_yuv420_to_image(
                 card,
@@ -522,10 +572,7 @@ pub fn dump_framebuffer_to_image(
                 verbose,
             ),
 
-            _ => panic!(
-                "Unsupported framebuffer pixel format: {} {:x}",
-                fourcc, fbinfo2.pixel_format
-            ),
+            _ => Err(unsupported("pixel format", &fourcc)),
         }
     };
 
