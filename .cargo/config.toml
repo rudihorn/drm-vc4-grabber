@@ -1,0 +1,17 @@
+# Cross-compilation defaults for Raspberry Pi (aarch64).
+#
+# Using cargo-zigbuild is the simplest path and needs no system toolchain:
+#
+#     rustup target add aarch64-unknown-linux-musl
+#     cargo install cargo-zigbuild
+#     pip install --user ziglang
+#     cargo zigbuild --release --target aarch64-unknown-linux-musl
+#
+# If you prefer a system cross-compiler, uncomment the relevant block below
+# and install the matching package (e.g. `apt install gcc-aarch64-linux-gnu`).
+
+# [target.aarch64-unknown-linux-gnu]
+# linker = "aarch64-linux-gnu-gcc"
+
+# [target.aarch64-unknown-linux-musl]
+# linker = "aarch64-linux-gnu-gcc"

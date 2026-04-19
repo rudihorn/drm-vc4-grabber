@@ -12,7 +12,6 @@
 *.swp
 *.swo
 Cargo.lock
-.cargo/
 .DS_Store
 .DS_Store?
 ._*
