@@ -17,6 +17,39 @@ use crate::{
     Card,
 };
 
+// --- Decimation tuning -------------------------------------------------------
+//
+// HyperHDR (and Hyperion) average many source pixels into each LED colour,
+// so the grabber only needs a coarse sample of the framebuffer. Tuning these
+// constants down reduces CPU use roughly quadratically with no visible change
+// at the LEDs for typical 50-300 LED setups.
+//
+// Rule of thumb: a 240×135 sample comfortably covers ~300 LEDs arranged around
+// a TV perimeter. Going smaller than 120×67 starts to visibly quantise colour
+// transitions during fast pans. Adjust if you notice issues.
+//
+// Constraints:
+//  * P030 decimation must divide `colpx = 96` (so: 3, 6, 12, 24 are valid)
+//  * NV12 decimation must divide `colpx = 128` (so: 4, 8, 16, 32 are valid)
+//  * Linear/XR30 decimation is unconstrained but keep it a power of two for
+//    cleanest pitch division.
+
+/// Decimation for linear XRGB8888 / ARGB8888 framebuffers at 1080p.
+const DECIM_LINEAR_HD: u32 = 8;
+/// Decimation for linear XRGB8888 / ARGB8888 framebuffers at 4K.
+const DECIM_LINEAR_4K: u32 = 16;
+
+/// Decimation for the 10-bit HDR XRGB2101010 linear path at 1080p.
+const DECIM_XR30_HD: u32 = 8;
+/// Decimation for the 10-bit HDR XRGB2101010 linear path at 4K.
+const DECIM_XR30_4K: u32 = 16;
+
+/// Decimation for P030 (Broadcom SAND128, 10-bit HDR video). Must divide 96.
+const DECIM_P030: usize = 12;
+
+/// Decimation for NV12 (Broadcom SAND128, 8-bit HD video). Must divide 128.
+const DECIM_NV12: usize = 16;
+
 /// RAII guard for an mmap'd framebuffer. Ensures the mapping is unmapped and
 /// the prime FD is closed even if the caller panics or returns early — the
 /// previous code leaked both on certain failure paths.
@@ -129,7 +162,7 @@ fn decode_p030_image(
     let mut yplane = vec![0u32; length as _];
     copy_buffer(card, handle, &mut yplane, verbose)?;
 
-    let decim = 3;
+    let decim = DECIM_P030;
     let mut img = RgbImage::new((size.0 / decim) as _, (size.1 / decim) as _);
     for y in 0..size.1 / decim {
         let ty = y * decim;
@@ -188,7 +221,7 @@ fn decode_nv12_image(
     let mut yplane = vec![0u32; length as _];
     copy_buffer(card, handle, &mut yplane, verbose)?;
 
-    let decim: usize = 4;
+    let decim: usize = DECIM_NV12;
     let mut img = RgbImage::new((size.0 / decim) as _, (size.1 / decim) as _);
     for y in 0..size.1 / decim {
         let ty = y * decim;
@@ -222,9 +255,13 @@ fn dump_linear_to_image(
     handle: u32,
     verbose: bool,
 ) -> Result<RgbImage, SystemError> {
-    // Decimate more aggressively for 4K — Hyperion averages per-LED anyway, so
-    // a 480x270 sample gives the same LED colours as a full 3840x2160.
-    let decim_factor: u32 = if size.0 >= 3840 || size.1 >= 2160 { 8 } else { 4 };
+    // Decimate more aggressively for 4K — HyperHDR averages per-LED anyway,
+    // so a coarse sample is sufficient. See top-of-file comments on tuning.
+    let decim_factor: u32 = if size.0 >= 3840 || size.1 >= 2160 {
+        DECIM_LINEAR_4K
+    } else {
+        DECIM_LINEAR_HD
+    };
     let length = (pitch * size.1 / (bpp / 8)) as usize;
 
     if verbose {
@@ -364,9 +401,12 @@ fn dump_xrgb2101010_linear_to_image(
     handle: u32,
     verbose: bool,
 ) -> Result<RgbImage, SystemError> {
-    // HDR content is almost always 4K these days; decimate 8x to match
-    // dump_linear_to_image's behaviour and cut memory traffic accordingly.
-    let decim_factor: u32 = if size.0 >= 3840 || size.1 >= 2160 { 8 } else { 4 };
+    // HDR content is almost always 4K. See top-of-file comments on tuning.
+    let decim_factor: u32 = if size.0 >= 3840 || size.1 >= 2160 {
+        DECIM_XR30_4K
+    } else {
+        DECIM_XR30_HD
+    };
     let length = (pitch * size.1 / 4) as usize;
 
     if verbose {
