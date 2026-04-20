@@ -159,8 +159,11 @@ fn decode_p030_image(
         );
     }
 
-    let mut yplane = vec![0u32; length as _];
-    copy_buffer(card, handle, &mut yplane, verbose)?;
+    // Direct-sample from mmap. The old code memcpy'd the full ~11MB SAND128
+    // buffer into a Vec<u32> before sampling only ~53K pixels from it, which
+    // was the dominant CPU cost during 4K HDR playback.
+    let map = unsafe { MappedBuffer::new(card, handle, length * size_of::<u32>())? };
+    let yplane: &[u32] = map.as_slice::<u32>(length);
 
     let decim = DECIM_P030;
     let mut img = RgbImage::new((size.0 / decim) as _, (size.1 / decim) as _);
@@ -218,8 +221,9 @@ fn decode_nv12_image(
         );
     }
 
-    let mut yplane = vec![0u32; length as _];
-    copy_buffer(card, handle, &mut yplane, verbose)?;
+    // Direct-sample from mmap — same motivation as decode_p030_image.
+    let map = unsafe { MappedBuffer::new(card, handle, length * size_of::<u32>())? };
+    let yplane: &[u32] = map.as_slice::<u32>(length);
 
     let decim: usize = DECIM_NV12;
     let mut img = RgbImage::new((size.0 / decim) as _, (size.1 / decim) as _);
