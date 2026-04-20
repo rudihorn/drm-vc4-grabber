@@ -110,59 +110,6 @@ pub fn rgb565_to_rgb888(mapping: &[u16], pitch: u32, size: (u32, u32)) -> RgbIma
     img
 }
 
-pub fn decode_image_multichannel(
-    mappings: [&[u8]; 3],
-    size: (u32, u32),
-    pitches: [u32; 3],
-) -> RgbImage {
-    let mut img = RgbImage::new(size.0, size.1);
-
-    for y in 0..size.1 {
-        for x in 0..size.0 {
-            let offset: usize = (y * pitches[0] + x) as _;
-            let offset1: usize = ((y / 2) * (pitches[1]) + x / 2) as _;
-            let offset2: usize = ((y / 2) * (pitches[2]) + x / 2) as _;
-            let yuv = YUV420Pixel::new(
-                mappings[0][offset],
-                mappings[1][offset1],
-                mappings[2][offset2],
-            );
-
-            unsafe { img.unsafe_put_pixel(x, y, yuv.rgb()) };
-        }
-    }
-
-    img
-}
-
-pub fn decode_small_image_multichannel(
-    mappings: [&[u8]; 3],
-    size: (u32, u32),
-    pitches: [u32; 3],
-) -> RgbImage {
-    let halfsize = (size.0 / 2, size.1 / 2);
-    let mut img = RgbImage::new(halfsize.0, halfsize.1);
-
-    for y in 0..halfsize.1 {
-        for x in 0..halfsize.0 {
-            let offset: usize = (2 * y * pitches[0] + 2 * x) as _;
-            let offset1: usize = (y * pitches[1] + x) as _;
-            let offset2: usize = (y * pitches[2] + x) as _;
-            let yat = |offset| mappings[0][offset] as u32;
-            let yval = (yat(offset)
-                + yat(offset + 1)
-                + yat(offset + pitches[0] as usize)
-                + yat(offset + pitches[0] as usize + 1))
-                / 4;
-            let yuv = YUV420Pixel::new(yval as _, mappings[1][offset1], mappings[2][offset2]);
-
-            unsafe { img.unsafe_put_pixel(x, y, yuv.rgb()) };
-        }
-    }
-
-    img
-}
-
 pub fn decode_tiled_small_image(
     mapping: &[u32],
     tilesize: u32,

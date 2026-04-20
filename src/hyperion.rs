@@ -64,6 +64,28 @@ pub fn register_direct(socket: &mut TcpStream) -> StdResult<()> {
     Ok(())
 }
 
+/// Drain any pending reply bytes from Hyperion without blocking. Called
+/// occasionally so HyperHDR's per-frame acks don't fill our TCP receive
+/// buffer, but without blocking the hot capture loop on every round-trip.
+pub fn drain_replies(socket: &mut TcpStream) -> StdResult<()> {
+    use std::io::ErrorKind;
+    socket.set_nonblocking(true)?;
+    let mut scratch = [0u8; 4096];
+    loop {
+        match socket.read(&mut scratch) {
+            Ok(0) => break, // connection closed cleanly
+            Ok(_) => continue, // more to drain
+            Err(ref e) if e.kind() == ErrorKind::WouldBlock => break,
+            Err(e) => {
+                socket.set_nonblocking(false)?;
+                return Err(e);
+            }
+        }
+    }
+    socket.set_nonblocking(false)?;
+    Ok(())
+}
+
 pub fn send_image(socket: &mut TcpStream, image: &RgbImage, verbose: bool) -> StdResult<()> {
     let mut builder = FlatBufferBuilder::new();
 
@@ -112,7 +134,9 @@ pub fn send_image(socket: &mut TcpStream, image: &RgbImage, verbose: bool) -> St
     socket.write_all(dat)?;
     socket.flush()?;
 
-    read_reply(socket, verbose)?;
+    // Don't block waiting for Hyperion's per-frame ack. At 30 FPS that was a
+    // ~14ms round-trip added to every frame on localhost. Instead the caller
+    // periodically drains accumulated replies via `drain_replies`.
 
     Ok(())
 }
