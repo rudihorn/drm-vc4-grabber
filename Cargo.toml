@@ -1,6 +1,6 @@
 [package]
 name = "drm-vc4-grabber"
-version = "0.1.0"
+version = "0.1.3"
 authors = ["Rudi <dyn-git@rudi-horn.de>"]
 edition = "2018"
 

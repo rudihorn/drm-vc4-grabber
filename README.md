@@ -1,81 +1,123 @@
-# Hyperion DRM VC4 screen grabber 
+# Hyperion & HyperHDR DRM VC4 screen grabber
 
-This is an experimental attempt to capture a screenshot from a Raspberry Pi that
- is rendering using the [Direct Rendering
- Manager](https://en.wikipedia.org/wiki/Direct_Rendering_Manager). It currently
- works by opening the default card adapter, looping through all the planes and
- finding the underlying framebuffers. Using the framebuffer it is possible to
- determine the buffer handle for the underlying buffer object handle.
+Captures the Raspberry Pi's framebuffer directly from the DRM (Direct Rendering
+Manager) subsystem and streams it to [Hyperion] / [HyperHDR] for ambient LED
+backlighting. It does not rely on a Kodi add-on, an X server, or a separate
+grabber binary: it reads the framebuffer that Kodi (or any KMS-native
+application) is already rendering, decodes it, and ships the image over TCP.
 
-The buffer object handle can be mapped to memory using the VC4 specific DRM
-API's (see `/usr/include/drm/vc4_drm.h`), specifically using the ioctl
-`drm_vc4_mmap_bo`. The memory data is stored using XRGB8888 in little-endian 32
-bit words, and is tiled in 32x32 bit squares
-([reference](https://docs.mesa3d.org/drivers/vc4.html#tiled-rendering)). There
-is also some other interlacing or similar I have not quite figured out yet.
+[Hyperion]: https://github.com/hyperion-project/hyperion.ng
+[HyperHDR]: https://github.com/awawa-dev/HyperHDR
 
-The current implementation connects to Hyperion at `127.0.0.1:19400` and
-directly uploads the images.
+## Supported platforms
+
+- **Raspberry Pi 5** (LibreELEC, driver `vc4` exposed as `card1`)
+- **Raspberry Pi 4** (LibreELEC / Raspberry Pi OS, driver `vc4` at `card0`)
+- Earlier Pi models that expose the VC4 KMS driver
+
+Pi 5 and Pi 4 have the display on different card nodes. Use the `-d` flag to
+override the default if needed (see [Usage](#usage)).
+
+## Supported framebuffer formats
+
+The grabber dispatches on the framebuffer's DRM FourCC and modifier:
+
+| FourCC        | Modifier                 | Common use                        |
+|---------------|--------------------------|-----------------------------------|
+| `XRGB8888`    | Linear / VC4 T-tiled     | Kodi UI, SDR video                |
+| `ARGB8888`    | Linear / VC4 T-tiled     | Kodi UI with alpha                |
+| `XRGB2101010` | Linear / VC4 T-tiled     | 10-bit HDR content                |
+| `YUV420`      | Linear                   | SD/HD video (8-bit)               |
+| `NV12`        | Broadcom SAND128         | Hardware-decoded HD video         |
+| `P030`        | Broadcom SAND128         | Hardware-decoded 4K HDR video     |
+| `RGB565`      | Linear                   | Legacy low-bpp surfaces           |
+
+Unknown formats are skipped with a log message, not a crash, so a transient
+format switch (common during HDR metadata transitions) will not take the
+service down.
 
 ## Usage
 
-1. Download the latest release archive.
-2. Extract the archive, e.g. `tar xvf drm-vc4-grabber-v0.1.0-aarch64-linux.tar.xz`
-3. Run the grabber in the background, e.g. `nohup ./drm-vc4-grabber-v0.1.0-aarch64-linux/drm-vc4-grabber`
-4. Optionally use systemd to automatically start it in the background. On LibreELEC, copy `systemd/drm-capture.service` to `~/.config/system.d/` and then run `systemctl enable drm-capture.service`.
+1. Download the latest release from the [Releases] page and extract it:
+   ```
+   tar xf drm-vc4-grabber-vX.Y.Z-aarch64-linux.tar.xz
+   ```
+2. Run it directly, pointing at your Hyperion server:
+   ```
+   ./drm-vc4-grabber-vX.Y.Z-aarch64-linux/drm-vc4-grabber
+   ```
+3. For a permanent setup, copy the supplied `drm-capture.service` unit to your
+   systemd config path. On LibreELEC:
+   ```
+   cp drm-capture.service /storage/.config/system.d/
+   systemctl enable --now drm-capture.service
+   ```
 
-##  Compiling
+[Releases]: https://github.com/rudihorn/drm-vc4-grabber/releases
 
-1. Ensure rust is installed (with rustup and cargo).
-2. Install the target toolchain for raspberry pi: `rustup target install aarch64-unknown-linux-gnu`.
-3. Ensure the linker for this toolchain is installed, e.g. `sudo apt install gcc-aarch64-linux-gnu`
-4. Set the linker in your env var: `export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=/usr/bin/aarch64-linux-gnu-gcc`
-5. Compile: `cargo build --release --target aarch64-unknown-linux-gnu`
-6. The built file will be at `target/aarch64-unknown-linux-gnu/release/drm-v4-capture`
+### Command-line flags
 
-## Example
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-d`, `--device` | `/dev/dri/card1` | DRM card node. Use `card0` for Pi 4 and earlier. |
+| `-a`, `--address` | `127.0.0.1:19400` | Hyperion / HyperHDR TCP endpoint. |
+| `--screenshot` | off | Capture a single frame to `screenshot.png` and exit. |
+| `-v`, `--verbose` | off | Log DRM, framebuffer, and send details. |
 
-The following is an example screen capture in the current codes state.
+## Building from source
 
-![Image capture](screenshot.png "Raspberry pi using latest OSMC devel branch and kodi 19")
+The easiest cross-compilation path uses `cargo-zigbuild`, which bundles its own
+toolchain via `pip install ziglang`. No system cross-compiler or sudo required.
 
+```bash
+# one-time setup
+rustup target add aarch64-unknown-linux-musl
+cargo install cargo-zigbuild
+pip install --user ziglang
 
-## Debug Output
-
+# build
+cargo zigbuild --release --target aarch64-unknown-linux-musl
 ```
-Driver: Driver { name: SmallOsString { data: [118, 99, 52, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], len: 3, as_ref(): "vc4" }, date: SmallOsString { data: [50, 48, 49, 52, 48, 54, 49, 54, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], len: 8, as_ref(): "20140616" }, desc: SmallOsString { data: [66, 114, 111, 97, 100, 99, 111, 109, 32, 86, 67, 52, 32, 103, 114, 97, 112, 104, 105, 99, 115, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], len: 21, as_ref(): "Broadcom VC4 graphics" } }
-Plane Info: Info { handle: plane::Handle(84), crtc: Some(crtc::Handle(83)), fb: Some(framebuffer::Handle(207)), pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-  -> FB Info: Info { handle: framebuffer::Handle(207), size: (1920, 1080), pitch: 7680, bpp: 32, depth: 24, buffer: 1 }
-  -> FB Info 2: drm_mode_fb_cmd2 { fb_id: 207, width: 1920, height: 1080, pixel_format: 875713112, flags: 2, handles: [2, 0, 0, 0], pitches: [7680, 0, 0, 0], offsets: [0, 0, 0, 0], modifier: [504403158265495553, 0, 0, 0] }
-  -> Offset: 306663424
-Plane Info: Info { handle: plane::Handle(90), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-Plane Info: Info { handle: plane::Handle(96), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-Plane Info: Info { handle: plane::Handle(102), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-Plane Info: Info { handle: plane::Handle(108), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-Plane Info: Info { handle: plane::Handle(114), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-Plane Info: Info { handle: plane::Handle(120), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-Plane Info: Info { handle: plane::Handle(126), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-Plane Info: Info { handle: plane::Handle(132), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-Plane Info: Info { handle: plane::Handle(138), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-Plane Info: Info { handle: plane::Handle(144), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-Plane Info: Info { handle: plane::Handle(150), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-Plane Info: Info { handle: plane::Handle(156), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-Plane Info: Info { handle: plane::Handle(162), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-Plane Info: Info { handle: plane::Handle(168), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-Plane Info: Info { handle: plane::Handle(174), crtc: None, fb: None, pos_crtcs: 15, formats: [0, 0, 0, 0, 0, 0, 0, 0], fmt_len: 8 }
-CRTC Info: Info { handle: crtc::Handle(62), position: (0, 0), mode: None, fb: None, gamma_length: 256 }
-CRTC Info: Info { handle: crtc::Handle(69), position: (0, 0), mode: None, fb: None, gamma_length: 256 }
-CRTC Info: Info { handle: crtc::Handle(76), position: (0, 0), mode: None, fb: None, gamma_length: 256 }
-CRTC Info: Info { handle: crtc::Handle(83), position: (0, 0), mode: Some(Mode { name: "1920x1080", clock: 148500, size: (1920, 1080), hsync: (2008, 2052, 2200), vsync: (1084, 1089, 1125), hskew: 0, vscan: 0, vrefresh: 60 }), fb: None, gamma_length: 256 }
-```
+
+The resulting binary is at
+`target/aarch64-unknown-linux-musl/release/drm-vc4-grabber`.
+
+Native builds on x86_64 (for compile-checks only, not runnable) work with
+`cargo build --release`.
+
+## How it works
+
+At startup the grabber opens the DRM device, enables the `UNIVERSAL_PLANES`
+capability, then enters a capture loop:
+
+1. Walk the CRTCs and planes to find the currently-scanned-out framebuffer.
+2. Call `DRM_IOCTL_MODE_GETFB2` to pull the framebuffer metadata (size, FourCC,
+   modifier, GEM handles, pitches, offsets).
+3. Convert the GEM handles to PRIME file descriptors, `mmap` them read-only.
+4. Decode the pixel data into an 8-bit RGB image, decimating 4x or 8x to keep
+   the image small (Hyperion averages across LED regions anyway).
+5. Flatbuffer-encode the image and send it over TCP to Hyperion.
+6. Close the PRIME FDs and GEM handles, then sleep the remainder of the
+   ~33 ms frame budget.
+
+Linear RGB formats are sampled directly from the mmap without an intermediate
+copy. Broadcom SAND128-tiled formats (NV12, P030) are copied once and decoded.
+
+## Compatibility with ambient-light servers
+
+The grabber uses Hyperion's native flatbuffer protocol on TCP port 19400. Both
+**Hyperion.NG** and **HyperHDR** speak this protocol, so either works as the
+receiver without any configuration change in the grabber.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
 
 ## Donations
 
-I am in no way dependent on any donations, and am not asking for any support.
-However, if you would still like to show your appreciation you may do so using
-either of the following methods:
+Not required and not solicited, but if you would like to support Rudi Horn
+(the original author):
 
-| Paypal                                                                                                      | Bitcoin                                                                                                  |
-|-------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
+| PayPal | Bitcoin |
+|--------|---------|
 | [![paypal](https://www.paypalobjects.com/en_US/i/btn/btn_donateCC_LG.gif)](https://www.paypal.me/rudihppal) | [bitcoin:bc1qjantllys0pg3zvsr97krxzz9dxzlmxmgy5qk4v](bitcoin:bc1qjantllys0pg3zvsr97krxzz9dxzlmxmgy5qk4v) |
-

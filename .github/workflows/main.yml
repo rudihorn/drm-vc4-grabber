@@ -22,14 +22,14 @@ jobs:
         build: [aarch64-linux]
         include:
         - build: aarch64-linux
-          os: ubuntu-20.04
+          os: ubuntu-24.04
           rust: stable
           target: aarch64-unknown-linux-musl
           cross: true
 
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           submodules: true
 
@@ -55,20 +55,11 @@ jobs:
           command: build
           args: --release --locked --target ${{ matrix.target }}
 
-      # - name: Strip release binary (arm)
-      #   if: matrix.build == 'aarch64-linux'
-      #   run: |
-      #     docker run --rm -v \
-      #       "$PWD/target:/target:Z" \
-      #       rustembedded/cross:${{ matrix.target }} \
-      #       aarch64-linux-gnu-strip \
-      #       /target/${{ matrix.target }}/release/$BIN_NAME
-
-      - name: Build archive
+      - name: Stage build outputs
         shell: bash
         run: |
           mkdir dist
-          cp "target/${{ matrix.target }}/release/$BIN_NAME" "dist/"
+          cp "target/${{ matrix.target }}/release/$BIN_NAME" dist/
 
       - uses: actions/upload-artifact@v4
         with:
@@ -78,46 +69,48 @@ jobs:
   publish:
     name: Publish
     needs: [dist]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           submodules: false
 
       - uses: actions/download-artifact@v4
 
-      - run: ls -al bins-*
-
       - name: Calculate tag name
+        id: tagname
         run: |
           name=dev
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
             name=${GITHUB_REF:10}
           fi
-          echo ::set-output name=val::$name
-          echo TAG=$name >> $GITHUB_ENV
-        id: tagname
+          echo "val=$name" >> "$GITHUB_OUTPUT"
+          echo "TAG=$name" >> "$GITHUB_ENV"
 
-      - name: Build archive
+      - name: Assemble release archives
         shell: bash
         run: |
           set -ex
 
-          rm -rf tmp
-          mkdir tmp
-          mkdir dist
+          rm -rf tmp dist
+          mkdir tmp dist
 
-          for dir in bins-* ; do
+          for dir in bins-*; do
               platform=${dir#"bins-"}
-              pkgname=$PROJECT_NAME-$TAG-$platform
-              mkdir tmp/$pkgname
-              # cp LICENSE README.md tmp/$pkgname
-              mv bins-$platform/$BIN_NAME$exe tmp/$pkgname
-              chmod +x tmp/$pkgname/$BIN_NAME$exe
+              pkgname="$PROJECT_NAME-$TAG-$platform"
+              mkdir "tmp/$pkgname"
 
-              tar cJf dist/$pkgname.tar.xz -C tmp $pkgname
+              # Binary
+              mv "bins-$platform/$BIN_NAME" "tmp/$pkgname/"
+              chmod +x "tmp/$pkgname/$BIN_NAME"
+
+              # Bundled helpers so users can install without cloning the repo
+              cp LICENSE README.md "tmp/$pkgname/"
+              cp systemd/drm-capture.service "tmp/$pkgname/"
+
+              tar cJf "dist/$pkgname.tar.xz" -C tmp "$pkgname"
           done
 
       - name: Upload binaries to release
@@ -128,8 +121,3 @@ jobs:
           file_glob: true
           tag: ${{ steps.tagname.outputs.val }}
           overwrite: true
-
-      - name: Extract version
-        id: extract-version
-        run: |
-          printf "::set-output name=%s::%s\n" tag-name "${GITHUB_REF#refs/tags/}"
